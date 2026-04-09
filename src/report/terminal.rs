@@ -13,7 +13,7 @@ pub fn print_report(
 ) {
     println!();
     println!("{}", "═══════════════════════════════════════════".bright_cyan());
-    println!("{}", "         AgentBench Report".bright_cyan().bold());
+    println!("{}", "          Merlint Report".bright_cyan().bold());
     println!("{}", "═══════════════════════════════════════════".bright_cyan());
     println!();
 

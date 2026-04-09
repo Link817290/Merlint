@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── agentbench installer ──
-# curl -fsSL https://raw.githubusercontent.com/user/agentbench/main/install.sh | bash
+# ── merlint installer ──
+# curl -fsSL https://raw.githubusercontent.com/Link817290/Merlint/main/install.sh | bash
 
-REPO="https://github.com/user/agentbench.git"
-INSTALL_DIR="${AGENTBENCH_INSTALL_DIR:-/tmp/agentbench-install}"
+REPO="https://github.com/Link817290/Merlint.git"
+INSTALL_DIR="${MERLINT_INSTALL_DIR:-/tmp/merlint-install}"
 
 # Colors
 R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' B='\033[0;34m'
@@ -13,15 +13,18 @@ M='\033[0;35m' C='\033[0;36m' W='\033[1;37m' D='\033[0;90m' N='\033[0m'
 
 banner() {
     echo ""
-    echo -e "${C}    ╔══════════════════════════════════════════════════════╗${N}"
-    echo -e "${C}    ║${N}${W}        _                 _   _                     ${N}${C}║${N}"
-    echo -e "${C}    ║${N}${G}   __ _ ${Y}| |__   ___ ${R}_ __ | |_${M}| |__   ___ ${B}_ __   ___ ${N}${C}║${N}"
-    echo -e "${C}    ║${N}${G}  / _\` |${Y}| '_ \\ / _ \\\\${R}| '_ \\| __${M}| '_ \\ / _ \\\\${B}| '_ \\ / __|${N}${C}║${N}"
-    echo -e "${C}    ║${N}${G} | (_| |${Y}| |_) |  __/${R}| | | | |_${M}| |_) |  __/${B}| | | | (__ ${N}${C}║${N}"
-    echo -e "${C}    ║${N}${G}  \\__,_|${Y}|_.__/ \\___|${R}|_| |_|\\__${M}|_.__/ \\___|${B}|_| |_|\\___|${N}${C}║${N}"
-    echo -e "${C}    ║${N}                                                      ${C}║${N}"
-    echo -e "${C}    ║${N}${D}     Agent Execution Efficiency Analyzer  v0.1.0     ${N}${C}║${N}"
-    echo -e "${C}    ╚══════════════════════════════════════════════════════╝${N}"
+    echo -e "${C}    ╔═══════════════════════════════════════════════════╗${N}"
+    echo -e "${C}    ║${N}                                                   ${C}║${N}"
+    echo -e "${C}    ║${N}         ${M}/\\${N}                                        ${C}║${N}"
+    echo -e "${C}    ║${N}        ${M}/  \\${N}     ${G}                 _ _       _${N}    ${C}║${N}"
+    echo -e "${C}    ║${N}       ${M}/____\\${N}    ${G} _ __ ___   ___ | (_)_ __ | |_${N}  ${C}║${N}"
+    echo -e "${C}    ║${N}       ${Y}(O  O)${N}    ${G}| '_ \` _ \\ / _ \\| | | '_ \\| __|${N} ${C}║${N}"
+    echo -e "${C}    ║${N}        ${Y}<>${N}      ${G}| | | | | |  __/| | | | | | |_ ${N} ${C}║${N}"
+    echo -e "${C}    ║${N}       ${W}/|  |\\${N}    ${G}|_| |_| |_|\\___||_|_|_| |_|\\__|${N} ${C}║${N}"
+    echo -e "${C}    ║${N}      ${Y}*---+${M}~${N}                                        ${C}║${N}"
+    echo -e "${C}    ║${N}                                                   ${C}║${N}"
+    echo -e "${C}    ║${N}  ${D}  Agent Token Optimizer                  v0.1.0${N}  ${C}║${N}"
+    echo -e "${C}    ╚═══════════════════════════════════════════════════╝${N}"
     echo ""
 }
 
@@ -59,15 +62,14 @@ if ! command -v git &>/dev/null; then
 fi
 
 # ── Clone & Install ──
-info "Installing agentbench..."
+info "Installing merlint..."
 
 if [ -d "$INSTALL_DIR" ]; then
     rm -rf "$INSTALL_DIR"
 fi
 
 git clone --depth 1 --quiet "$REPO" "$INSTALL_DIR" 2>/dev/null || {
-    # If clone fails (e.g. repo doesn't exist yet), check if we're in the repo dir
-    if [ -f "Cargo.toml" ] && grep -q 'name = "agentbench"' Cargo.toml 2>/dev/null; then
+    if [ -f "Cargo.toml" ] && grep -q 'name = "merlint"' Cargo.toml 2>/dev/null; then
         INSTALL_DIR="."
         warn "Could not clone repo, installing from current directory"
     else
@@ -82,22 +84,22 @@ done
 
 # ── Verify ──
 export PATH="$HOME/.cargo/bin:$PATH"
-if command -v agentbench &>/dev/null; then
+if command -v merlint &>/dev/null; then
     echo ""
     echo -e "  ${G}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
     echo -e "  ${G}  Installation complete!${N}"
     echo -e "  ${G}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${N}"
     echo ""
     echo -e "  ${W}Quick start:${N}"
-    echo -e "    ${C}agentbench scan${N}           ${D}# find agent sessions${N}"
-    echo -e "    ${C}agentbench latest${N}         ${D}# analyze most recent session${N}"
-    echo -e "    ${C}agentbench proxy -d${N}       ${D}# start daemon proxy${N}"
-    echo -e "    ${C}agentbench query${N}          ${D}# JSON output for agents${N}"
+    echo -e "    ${C}merlint scan${N}              ${D}# find agent sessions${N}"
+    echo -e "    ${C}merlint latest${N}            ${D}# analyze most recent session${N}"
+    echo -e "    ${C}merlint optimize${N}          ${D}# auto-optimize your agent${N}"
+    echo -e "    ${C}merlint monitor${N}           ${D}# continuous monitoring${N}"
     echo ""
-    echo -e "  ${D}Binary: $(which agentbench)${N}"
+    echo -e "  ${D}Binary: $(which merlint)${N}"
     echo ""
 else
-    fail "Installation failed. agentbench not found in PATH."
+    fail "Installation failed. merlint not found in PATH."
 fi
 
 # Cleanup

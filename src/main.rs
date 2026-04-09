@@ -1,6 +1,7 @@
 mod analyzer;
 mod banner;
 mod models;
+mod optimizer;
 mod parser;
 mod proxy;
 mod report;
@@ -14,11 +15,11 @@ use tokio::sync::Mutex;
 use models::trace::TraceSession;
 use parser::discover::AgentKind;
 
-const DEFAULT_TRACE_FILE: &str = "/tmp/agentbench-traces.json";
+const DEFAULT_TRACE_FILE: &str = "/tmp/merlint-traces.json";
 
 #[derive(Parser)]
-#[command(name = "agentbench")]
-#[command(about = "Agent execution efficiency analyzer — real token data, cache hits, and performance benchmarking")]
+#[command(name = "merlint")]
+#[command(about = "Agent token optimizer — diagnose, optimize, and monitor LLM agent efficiency")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -44,7 +45,7 @@ enum Commands {
     /// Scan this machine for agent sessions (Claude Code, Codex)
     Scan,
 
-    /// Analyze a trace/session file (supports agentbench JSON, Claude Code, Codex)
+    /// Analyze a trace/session file (supports merlint JSON, Claude Code, Codex)
     Analyze {
         /// Path to trace or session file
         #[arg(default_value = DEFAULT_TRACE_FILE)]
@@ -76,6 +77,43 @@ enum Commands {
         #[arg(short, long, default_value = "terminal")]
         format: OutputFormat,
     },
+
+    /// Generate optimization plan from a trace/session
+    Optimize {
+        /// Path to trace or session file
+        #[arg(default_value = DEFAULT_TRACE_FILE)]
+        trace_file: PathBuf,
+        #[arg(short = 's', long)]
+        source: Option<SourceFormat>,
+        /// Auto-apply optimizations (default: true)
+        #[arg(long, default_value = "true")]
+        auto: bool,
+        /// Target directory for generated config files
+        #[arg(short, long, default_value = ".")]
+        target: PathBuf,
+        /// Dry run — show plan without writing files
+        #[arg(long)]
+        dry_run: bool,
+        /// Output plan as JSON instead of terminal
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Monitor agent sessions continuously, auto-optimize on new data
+    Monitor {
+        /// Which agent to monitor
+        #[arg(short, long)]
+        agent: Option<AgentFilter>,
+        /// Check interval in seconds
+        #[arg(short, long, default_value = "30")]
+        interval: u64,
+        /// Auto-apply optimizations when issues found
+        #[arg(long, default_value = "true")]
+        auto_optimize: bool,
+        /// Target directory for generated config files
+        #[arg(short, long, default_value = ".")]
+        target: PathBuf,
+    },
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -87,8 +125,8 @@ enum OutputFormat {
 
 #[derive(Clone, clap::ValueEnum)]
 enum SourceFormat {
-    /// agentbench native trace format
-    Agentbench,
+    /// merlint native trace format
+    Merlint,
     /// Claude Code session (JSONL or JSON)
     ClaudeCode,
     /// Codex CLI session
@@ -184,8 +222,8 @@ async fn main() -> anyhow::Result<()> {
                 }
                 println!();
             }
-            println!("Use `agentbench latest` to analyze the most recent session.");
-            println!("Use `agentbench analyze <file> -s claude-code` to analyze a specific file.");
+            println!("Use `merlint latest` to analyze the most recent session.");
+            println!("Use `merlint analyze <file> -s claude-code` to analyze a specific file.");
         }
 
         Commands::Latest { agent, format } => {
@@ -200,7 +238,7 @@ async fn main() -> anyhow::Result<()> {
                 .collect();
 
             if filtered.is_empty() {
-                eprintln!("No agent sessions found. Run `agentbench scan` to check.");
+                eprintln!("No agent sessions found. Run `merlint scan` to check.");
                 return Ok(());
             }
 
@@ -247,6 +285,102 @@ async fn main() -> anyhow::Result<()> {
             output_report(&session, &format, &output);
         }
 
+        Commands::Optimize {
+            trace_file, source, auto, target, dry_run, json,
+        } => {
+            let session = smart_load(&trace_file, source.as_ref())?;
+            if session.entries.is_empty() {
+                eprintln!("No entries found.");
+                return Ok(());
+            }
+
+            let plan = build_optimization_plan(&session);
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&plan)?);
+                return Ok(());
+            }
+
+            optimizer::applier::print_plan(&plan);
+
+            if plan.is_empty() {
+                return Ok(());
+            }
+
+            if auto && !dry_run {
+                eprintln!("Auto-applying optimizations to {}...", target.display());
+                let results = optimizer::applier::apply_plan(&plan, &target, false);
+                optimizer::applier::print_apply_results(&results);
+            } else if dry_run {
+                let results = optimizer::applier::apply_plan(&plan, &target, true);
+                optimizer::applier::print_apply_results(&results);
+                eprintln!("Dry run — no files written. Remove --dry-run to apply.");
+            } else {
+                eprintln!("Run with --auto to apply, or --dry-run to preview.");
+            }
+        }
+
+        Commands::Monitor {
+            agent, interval, auto_optimize, target,
+        } => {
+            tracing_subscriber::fmt().with_target(false).with_level(true).init();
+            eprintln!("Monitoring agent sessions (interval: {}s, auto-optimize: {})", interval, auto_optimize);
+            eprintln!("Press Ctrl+C to stop.\n");
+
+            let mut last_seen: Option<(PathBuf, std::time::SystemTime)> = None;
+
+            loop {
+                let sources = parser::discover::discover_agents();
+                let filtered: Vec<_> = sources.into_iter()
+                    .filter(|s| match &agent {
+                        Some(AgentFilter::ClaudeCode) => s.kind == AgentKind::ClaudeCode,
+                        Some(AgentFilter::Codex) => s.kind == AgentKind::Codex,
+                        None => true,
+                    })
+                    .collect();
+
+                let mut best: Option<(PathBuf, AgentKind, std::time::SystemTime)> = None;
+                for src in &filtered {
+                    let sessions = parser::discover::list_sessions(&src.session_dir);
+                    if let Some(latest) = sessions.first() {
+                        let mtime = latest.metadata().ok().and_then(|m| m.modified().ok())
+                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        if best.as_ref().map(|(_, _, t)| mtime > *t).unwrap_or(true) {
+                            best = Some((latest.clone(), src.kind, mtime));
+                        }
+                    }
+                }
+
+                if let Some((path, kind, mtime)) = best {
+                    let is_new = last_seen.as_ref()
+                        .map(|(p, t)| p != &path || *t != mtime)
+                        .unwrap_or(true);
+
+                    if is_new {
+                        eprintln!("[{}] New/updated session: {}", chrono::Local::now().format("%H:%M:%S"), path.display());
+                        last_seen = Some((path.clone(), mtime));
+
+                        if let Ok(session) = load_from_source(&path, kind) {
+                            if !session.entries.is_empty() {
+                                let plan = build_optimization_plan(&session);
+                                if !plan.is_empty() {
+                                    optimizer::applier::print_plan(&plan);
+                                    if auto_optimize {
+                                        let results = optimizer::applier::apply_plan(&plan, &target, false);
+                                        optimizer::applier::print_apply_results(&results);
+                                    }
+                                } else {
+                                    eprintln!("  No optimizations needed.");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+            }
+        }
+
         Commands::Query {
             trace_file, source, metric,
         } => {
@@ -255,7 +389,7 @@ async fn main() -> anyhow::Result<()> {
                 Err(_) => {
                     println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                         "error": "no trace data",
-                        "hint": "run `agentbench scan` or `agentbench proxy --daemon`"
+                        "hint": "run `merlint scan` or `merlint proxy --daemon`"
                     }))?);
                     return Ok(());
                 }
@@ -350,7 +484,7 @@ fn output_report(session: &TraceSession, format: &OutputFormat, output: &Option<
 fn smart_load(path: &PathBuf, source: Option<&SourceFormat>) -> anyhow::Result<TraceSession> {
     if let Some(fmt) = source {
         return match fmt {
-            SourceFormat::Agentbench => load_native(path),
+            SourceFormat::Merlint => load_native(path),
             SourceFormat::ClaudeCode => parser::claude_code::parse_session(path),
             SourceFormat::Codex => parser::codex::parse_session(path),
         };
@@ -378,6 +512,40 @@ fn load_native(path: &PathBuf) -> anyhow::Result<TraceSession> {
     let content = std::fs::read_to_string(path)?;
     let session: TraceSession = serde_json::from_str(&content)?;
     Ok(session)
+}
+
+fn build_optimization_plan(session: &TraceSession) -> optimizer::plan::OptimizationPlan {
+    let ts = analyzer::token::summarize_session_tokens(session);
+    let ca = analyzer::cache::analyze_cache(session);
+    let ea = analyzer::efficiency::analyze_efficiency(session);
+
+    let mut plan = optimizer::plan::OptimizationPlan::new();
+
+    for item in optimizer::tools::optimize_tools(&ts) {
+        plan.add(item);
+    }
+    for item in optimizer::prompt::optimize_prompt(session, &ts, &ca) {
+        plan.add(item);
+    }
+    for item in optimizer::config::optimize_efficiency(&ts, &ea) {
+        plan.add(item);
+    }
+
+    // Calculate estimated cache improvement
+    if !plan.items.is_empty() {
+        let current_hit = if ts.cache_data_available && ts.total_prompt_tokens > 0 {
+            ts.total_cache_read_tokens as f64 / ts.total_prompt_tokens as f64 * 100.0
+        } else {
+            ca.theoretical_cache_hit_ratio * 100.0
+        };
+        let has_cache_fixes = plan.items.iter().any(|i| matches!(i.category, optimizer::plan::OptCategory::Cache));
+        if has_cache_fixes {
+            plan.estimated_cache_improvement_pct = (80.0 - current_hit).max(0.0);
+        }
+    }
+
+    plan.sort_by_impact();
+    plan
 }
 
 fn load_from_source(path: &PathBuf, kind: AgentKind) -> anyhow::Result<TraceSession> {

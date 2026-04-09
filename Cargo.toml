@@ -1,16 +1,16 @@
 [package]
-name = "agentbench"
+name = "merlint"
 version = "0.1.0"
 edition = "2021"
-description = "Agent execution efficiency analyzer - token consumption, cache hits, and performance benchmarking"
+description = "Agent token optimizer — diagnose, optimize, and monitor LLM agent efficiency"
 license = "MIT"
-repository = "https://github.com/user/agentbench"
+repository = "https://github.com/Link817290/Merlint"
 readme = "README.md"
-keywords = ["agent", "benchmark", "llm", "proxy", "token"]
+keywords = ["agent", "lint", "llm", "token", "optimizer"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "agentbench"
+name = "merlint"
 path = "src/main.rs"
 
 [dependencies]

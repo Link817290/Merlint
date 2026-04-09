@@ -27,7 +27,7 @@ pub struct ProxyConfig {
 pub async fn run_proxy(config: ProxyConfig, session: Arc<Mutex<TraceSession>>) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", config.listen_port);
     let listener = TcpListener::bind(&addr).await?;
-    info!("agentbench proxy listening on {}", addr);
+    info!("merlint proxy listening on {}", addr);
     info!("forwarding to {}", config.target_url);
 
     let config = Arc::new(config);
@@ -97,7 +97,7 @@ async fn handle_request(
         Err(e) => {
             error!("upstream error: {}", e);
             let err_body = serde_json::json!({
-                "error": { "message": format!("agentbench proxy error: {}", e) }
+                "error": { "message": format!("merlint proxy error: {}", e) }
             });
             return Ok(Response::builder()
                 .status(502)
