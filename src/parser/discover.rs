@@ -25,17 +25,42 @@ pub fn discover_agents() -> Vec<AgentSource> {
     // ── Claude Code ──
     let claude_dir = home.join(".claude");
     if claude_dir.is_dir() {
-        // Find all project session dirs
         let projects_dir = claude_dir.join("projects");
         if projects_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&projects_dir) {
                 for entry in entries.flatten() {
-                    let sessions_dir = entry.path().join("sessions");
+                    let project_dir = entry.path();
+                    if !project_dir.is_dir() {
+                        continue;
+                    }
+                    let project_name = entry.file_name().to_string_lossy().to_string();
+
+                    // Check for sessions/ subdirectory (Linux/macOS)
+                    let sessions_dir = project_dir.join("sessions");
                     if sessions_dir.is_dir() {
                         sources.push(AgentSource {
-                            name: format!("claude-code/{}", entry.file_name().to_string_lossy()),
+                            name: format!("claude-code/{}", project_name),
                             kind: AgentKind::ClaudeCode,
                             session_dir: sessions_dir,
+                        });
+                    }
+
+                    // Also check for .jsonl files directly in project dir (Windows)
+                    let has_jsonl = std::fs::read_dir(&project_dir)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .any(|e| {
+                            e.path().extension()
+                                .map(|ext| ext == "jsonl")
+                                .unwrap_or(false)
+                                && e.path().is_file()
+                        });
+                    if has_jsonl {
+                        sources.push(AgentSource {
+                            name: format!("claude-code/{}", project_name),
+                            kind: AgentKind::ClaudeCode,
+                            session_dir: project_dir,
                         });
                     }
                 }
