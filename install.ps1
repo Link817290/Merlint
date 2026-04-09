@@ -19,17 +19,21 @@ if (!(Test-Path $installDir)) {
 
 # Download latest release
 Write-Host "  [*] Downloading merlint..." -ForegroundColor Blue
-$releaseUrl = "https://api.github.com/repos/Link817290/Merlint/releases/latest"
+$downloadUrl = $null
 try {
-    $release = Invoke-RestMethod -Uri $releaseUrl -Headers @{ "User-Agent" = "merlint-installer" }
-    $asset = $release.assets | Where-Object { $_.name -like "*windows*" } | Select-Object -First 1
-    if (!$asset) {
-        throw "No Windows binary found in release"
+    # Try all releases (sorted newest first)
+    $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/Link817290/Merlint/releases?per_page=5" -Headers @{ "User-Agent" = "merlint-installer" }
+    foreach ($rel in $releases) {
+        $asset = $rel.assets | Where-Object { $_.name -like "*windows*" } | Select-Object -First 1
+        if ($asset) {
+            $downloadUrl = $asset.browser_download_url
+            Write-Host "  [*] Version: $($rel.tag_name)" -ForegroundColor Blue
+            break
+        }
     }
-    $downloadUrl = $asset.browser_download_url
+    if (!$downloadUrl) { throw "No Windows binary found" }
 } catch {
-    # Fallback to known tag
-    $downloadUrl = "https://github.com/Link817290/Merlint/releases/download/v0.1.0/merlint-windows-x64.exe"
+    $downloadUrl = "https://github.com/Link817290/Merlint/releases/download/v0.1.2/merlint-windows-x64.exe"
 }
 
 Invoke-WebRequest -Uri $downloadUrl -OutFile $exePath -UseBasicParsing
