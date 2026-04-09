@@ -1,0 +1,101 @@
+{
+  "id": "demo-session",
+  "started_at": "2026-04-09T10:00:00Z",
+  "entries": [
+    {
+      "id": "e1",
+      "timestamp": "2026-04-09T10:00:01Z",
+      "latency_ms": 2300,
+      "provider": "anthropic",
+      "request": {
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {"role": "system", "content": "You are a coding assistant with access to tools. Follow best practices."},
+          {"role": "user", "content": "Fix the login bug in auth.py"}
+        ],
+        "tools": [
+          {"type": "function", "function": {"name": "Read", "description": "Read a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Write", "description": "Write a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Edit", "description": "Edit a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Bash", "description": "Run shell command", "parameters": {}}},
+          {"type": "function", "function": {"name": "Glob", "description": "Search files by pattern", "parameters": {}}},
+          {"type": "function", "function": {"name": "Grep", "description": "Search file contents", "parameters": {}}},
+          {"type": "function", "function": {"name": "WebSearch", "description": "Search the web", "parameters": {}}},
+          {"type": "function", "function": {"name": "TodoWrite", "description": "Manage task list", "parameters": {}}}
+        ]
+      },
+      "response": {
+        "id": "resp-1",
+        "model": "claude-sonnet-4-6",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Read", "arguments": "{\"path\":\"auth.py\"}"}}]}, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 1850, "completion_tokens": 45, "total_tokens": 1895, "cache_creation_input_tokens": 1200, "cache_read_input_tokens": 0}
+      }
+    },
+    {
+      "id": "e2",
+      "timestamp": "2026-04-09T10:00:05Z",
+      "latency_ms": 1800,
+      "provider": "anthropic",
+      "request": {
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {"role": "system", "content": "You are a coding assistant with access to tools. Follow best practices."},
+          {"role": "user", "content": "Fix the login bug in auth.py"},
+          {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Read", "arguments": "{\"path\":\"auth.py\"}"}}]},
+          {"role": "tool", "tool_call_id": "c1", "content": "def login(u, p): return db.get(u).pw == p"},
+          {"role": "user", "content": "File content above"}
+        ],
+        "tools": [
+          {"type": "function", "function": {"name": "Read", "description": "Read a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Write", "description": "Write a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Edit", "description": "Edit a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Bash", "description": "Run shell command", "parameters": {}}},
+          {"type": "function", "function": {"name": "Glob", "description": "Search files by pattern", "parameters": {}}},
+          {"type": "function", "function": {"name": "Grep", "description": "Search file contents", "parameters": {}}},
+          {"type": "function", "function": {"name": "WebSearch", "description": "Search the web", "parameters": {}}},
+          {"type": "function", "function": {"name": "TodoWrite", "description": "Manage task list", "parameters": {}}}
+        ]
+      },
+      "response": {
+        "id": "resp-2",
+        "model": "claude-sonnet-4-6",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": null, "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "Read", "arguments": "{\"path\":\"auth.py\"}"}}]}, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 2100, "completion_tokens": 40, "total_tokens": 2140, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 1200}
+      }
+    },
+    {
+      "id": "e3",
+      "timestamp": "2026-04-09T10:00:09Z",
+      "latency_ms": 3100,
+      "provider": "anthropic",
+      "request": {
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {"role": "system", "content": "You are a coding assistant with access to tools. Follow best practices."},
+          {"role": "user", "content": "Fix the login bug in auth.py"},
+          {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Read", "arguments": "{\"path\":\"auth.py\"}"}}]},
+          {"role": "tool", "tool_call_id": "c1", "content": "def login(u, p): return db.get(u).pw == p"},
+          {"role": "assistant", "content": null, "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "Read", "arguments": "{\"path\":\"auth.py\"}"}}]},
+          {"role": "tool", "tool_call_id": "c2", "content": "def login(u, p): return db.get(u).pw == p"},
+          {"role": "user", "content": "Use bcrypt for password hashing"}
+        ],
+        "tools": [
+          {"type": "function", "function": {"name": "Read", "description": "Read a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Write", "description": "Write a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Edit", "description": "Edit a file", "parameters": {}}},
+          {"type": "function", "function": {"name": "Bash", "description": "Run shell command", "parameters": {}}},
+          {"type": "function", "function": {"name": "Glob", "description": "Search files by pattern", "parameters": {}}},
+          {"type": "function", "function": {"name": "Grep", "description": "Search file contents", "parameters": {}}},
+          {"type": "function", "function": {"name": "WebSearch", "description": "Search the web", "parameters": {}}},
+          {"type": "function", "function": {"name": "TodoWrite", "description": "Manage task list", "parameters": {}}}
+        ]
+      },
+      "response": {
+        "id": "resp-3",
+        "model": "claude-sonnet-4-6",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": null, "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "Edit", "arguments": "{\"path\":\"auth.py\",\"old\":\"return db.get(u).pw == p\",\"new\":\"return bcrypt.checkpw(p, db.get(u).pw_hash)\"}"}}]}, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 2800, "completion_tokens": 120, "total_tokens": 2920, "cache_creation_input_tokens": 300, "cache_read_input_tokens": 1400}
+      }
+    }
+  ]
+}
