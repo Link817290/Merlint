@@ -207,23 +207,97 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            println!("Found {} agent source(s):\n", sources.len());
+            // Collect all sessions with index
+            let mut all_sessions: Vec<(PathBuf, AgentKind, String, String)> = Vec::new();
             for src in &sources {
                 let kind_str = match src.kind {
                     AgentKind::ClaudeCode => "Claude Code",
                     AgentKind::Codex => "Codex CLI",
                 };
                 let sessions = parser::discover::list_sessions(&src.session_dir);
-                println!("  {} [{}]", kind_str, src.name);
-                println!("    Dir:      {}", src.session_dir.display());
-                println!("    Sessions: {}", sessions.len());
-                if let Some(latest) = sessions.first() {
-                    println!("    Latest:   {}", latest.file_name().unwrap_or_default().to_string_lossy());
+                for s in sessions {
+                    let size = s.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                    let mtime = s.metadata().ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+                        .map(|d| {
+                            let dt = chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                                .unwrap_or_default();
+                            dt.format("%Y-%m-%d %H:%M").to_string()
+                        })
+                        .unwrap_or_else(|| "unknown".into());
+                    let size_str = if size >= 1_000_000 {
+                        format!("{:.1}MB", size as f64 / 1_000_000.0)
+                    } else if size >= 1_000 {
+                        format!("{:.0}KB", size as f64 / 1_000.0)
+                    } else {
+                        format!("{}B", size)
+                    };
+                    let name = s.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let label = format!("[{}] {} ({}, {})", kind_str, name, size_str, mtime);
+                    all_sessions.push((s, src.kind, src.name.clone(), label));
                 }
-                println!();
             }
-            println!("Use `merlint latest` to analyze the most recent session.");
-            println!("Use `merlint analyze <file> -s claude-code` to analyze a specific file.");
+
+            if all_sessions.is_empty() {
+                println!("No session files found.");
+                return Ok(());
+            }
+
+            println!("Found {} session(s):\n", all_sessions.len());
+            for (i, (_, _, project, label)) in all_sessions.iter().enumerate() {
+                println!("  {:>3})  {} / {}", i + 1, project, label);
+            }
+            println!();
+            println!("  {:>3})  Exit", 0);
+            println!();
+
+            // Interactive selection
+            eprint!("Select session to analyze [1-{}]: ", all_sessions.len());
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let choice: usize = input.trim().parse().unwrap_or(0);
+
+            if choice == 0 || choice > all_sessions.len() {
+                return Ok(());
+            }
+
+            let (path, kind, _, _) = &all_sessions[choice - 1];
+            eprintln!("\nAnalyzing: {}\n", path.display());
+
+            let session = load_from_source(path, *kind)?;
+            if session.entries.is_empty() {
+                eprintln!("No API calls found in this session.");
+                return Ok(());
+            }
+
+            run_and_print_report(&session);
+
+            // Ask if user wants to optimize
+            eprintln!();
+            eprint!("Generate optimization plan? [Y/n]: ");
+            let mut opt_input = String::new();
+            std::io::stdin().read_line(&mut opt_input)?;
+            let opt_choice = opt_input.trim().to_lowercase();
+
+            if opt_choice.is_empty() || opt_choice == "y" || opt_choice == "yes" {
+                let plan = build_optimization_plan(&session);
+                if plan.is_empty() {
+                    eprintln!("No optimizations needed — looking good!");
+                } else {
+                    optimizer::applier::print_plan(&plan);
+                    eprintln!();
+                    eprint!("Apply optimizations to current directory? [Y/n]: ");
+                    let mut apply_input = String::new();
+                    std::io::stdin().read_line(&mut apply_input)?;
+                    let apply_choice = apply_input.trim().to_lowercase();
+                    if apply_choice.is_empty() || apply_choice == "y" || apply_choice == "yes" {
+                        let target = PathBuf::from(".");
+                        let results = optimizer::applier::apply_plan(&plan, &target, false);
+                        optimizer::applier::print_apply_results(&results);
+                    }
+                }
+            }
         }
 
         Commands::Latest { agent, format } => {
