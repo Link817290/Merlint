@@ -50,6 +50,7 @@ pub fn discover_agents() -> Vec<AgentSource> {
         home.join("Library/Application Support/codex-cli"),
         home.join(".local/share/codex-cli"),
         home.join(".codex"),
+        home.join("AppData/Local/codex-cli"),
     ];
     for p in codex_paths {
         if p.is_dir() {
@@ -115,6 +116,7 @@ pub fn list_sessions(dir: &PathBuf) -> Vec<PathBuf> {
 
 fn dirs_home() -> Option<PathBuf> {
     std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
         .map(PathBuf::from)
 }
