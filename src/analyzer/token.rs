@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::trace::TraceSession;
 
@@ -27,6 +27,9 @@ pub struct SessionTokenSummary {
     pub tool_names_defined: Vec<String>,
     pub tool_names_used: Vec<String>,
     pub tool_names_unused: Vec<String>,
+
+    /// Per-tool call counts (tool_name -> number of times called)
+    pub tool_call_counts: Vec<(String, usize)>,
 
     /// Per-call breakdown (real API data)
     pub per_call: Vec<CallTokens>,
@@ -65,6 +68,7 @@ pub fn summarize_session_tokens(session: &TraceSession) -> SessionTokenSummary {
 
     let mut all_defined: HashSet<String> = HashSet::new();
     let mut all_used: HashSet<String> = HashSet::new();
+    let mut tool_counts: HashMap<String, usize> = HashMap::new();
 
     let mut per_call = Vec::with_capacity(num_calls);
 
@@ -112,6 +116,7 @@ pub fn summarize_session_tokens(session: &TraceSession) -> SessionTokenSummary {
                     for call in calls {
                         if let Some(ref f) = call.function {
                             all_used.insert(f.name.clone());
+                            *tool_counts.entry(f.name.clone()).or_insert(0) += 1;
                             tool_calls_made += 1;
                         }
                     }
@@ -137,6 +142,9 @@ pub fn summarize_session_tokens(session: &TraceSession) -> SessionTokenSummary {
     tool_names_defined.sort();
     let mut tool_names_used: Vec<String> = all_used.iter().cloned().collect();
     tool_names_used.sort();
+    let mut tool_call_counts: Vec<(String, usize)> = tool_counts.into_iter().collect();
+    tool_call_counts.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by count descending
+
     let tool_names_unused: Vec<String> = all_defined
         .difference(&all_used)
         .cloned()
@@ -160,6 +168,7 @@ pub fn summarize_session_tokens(session: &TraceSession) -> SessionTokenSummary {
         tool_names_defined,
         tool_names_used,
         tool_names_unused,
+        tool_call_counts,
         per_call,
     }
 }
