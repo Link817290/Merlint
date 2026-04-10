@@ -79,12 +79,14 @@ pub async fn run(port: Option<u16>, foreground: bool) -> anyhow::Result<()> {
 
     // Write env file for shell integration
     write_env_file(port)?;
+    // Auto-install shell hook if not already present
+    auto_install_hook();
 
     if foreground {
         // Run in foreground (with logs)
         eprintln!("merlint proxy starting on port {} -> {}", port, target);
         eprintln!("Press Ctrl+C to stop\n");
-        print_shell_hint();
+        print_current_terminal_hint();
 
         let result = super::proxy::run(port, target, None, output, false, true).await;
         clear_env_file();
@@ -133,7 +135,7 @@ pub async fn run(port: Option<u16>, foreground: bool) -> anyhow::Result<()> {
 
                 eprintln!("merlint proxy started (PID {}, port {})", pid, port);
                 eprintln!();
-                print_shell_hint();
+                print_current_terminal_hint();
                 eprintln!();
                 eprintln!("  Commands:");
                 eprintln!("    merlint dashboard    # live monitoring");
@@ -150,40 +152,61 @@ pub async fn run(port: Option<u16>, foreground: bool) -> anyhow::Result<()> {
     }
 }
 
-fn print_shell_hint() {
-    let home = dirs::home_dir().unwrap_or_default();
+/// Automatically install shell hooks if not already present.
+/// Called by `merlint up` so the user never needs to run `setup-shell` manually.
+fn auto_install_hook() {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return,
+    };
 
-    // Check POSIX hooks
-    let posix_profiles = [home.join(".zshrc"), home.join(".bashrc")];
-    let posix_hook = posix_profiles.iter().any(|p| has_shell_hook(p));
-
-    // Check PowerShell hook
-    let ps_hook = powershell_profile()
-        .map(|p| has_shell_hook(&p))
-        .unwrap_or(false);
-
-    let any_hook = posix_hook || ps_hook;
-
-    if any_hook {
-        eprintln!("  Shell hook active — new terminals auto-route through merlint.");
-        if cfg!(windows) {
-            eprintln!("  For this terminal, run:");
-            eprintln!("    . $HOME\\.merlint\\env.ps1");
-        } else {
-            eprintln!("  For this terminal, run:");
-            eprintln!("    source ~/.merlint/env");
+    // POSIX shells
+    for (profile, name) in [
+        (home.join(".zshrc"), "zsh"),
+        (home.join(".bashrc"), "bash"),
+    ] {
+        if !profile.exists() || has_shell_hook(&profile) {
+            continue;
         }
+        if let Ok(mut content) = std::fs::read_to_string(&profile) {
+            content.push_str("\n\n");
+            content.push_str(SHELL_HOOK);
+            content.push('\n');
+            if std::fs::write(&profile, content).is_ok() {
+                eprintln!("  Auto-configured {} for merlint proxy", name);
+            }
+        }
+    }
+
+    // PowerShell
+    if let Some(ps_profile) = powershell_profile() {
+        if !has_shell_hook(&ps_profile) {
+            if let Some(parent) = ps_profile.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let mut content = if ps_profile.exists() {
+                std::fs::read_to_string(&ps_profile).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            content.push_str("\r\n\r\n");
+            content.push_str(PS_HOOK);
+            content.push_str("\r\n");
+            if std::fs::write(&ps_profile, content).is_ok() {
+                eprintln!("  Auto-configured PowerShell for merlint proxy");
+            }
+        }
+    }
+}
+
+fn print_current_terminal_hint() {
+    eprintln!("  New terminals will auto-route through merlint.");
+    if cfg!(windows) {
+        eprintln!("  For THIS terminal, run:");
+        eprintln!("    . $HOME\\.merlint\\env.ps1");
     } else {
-        eprintln!("  To auto-configure all terminals, run once:");
-        eprintln!("    merlint setup-shell");
-        eprintln!();
-        if cfg!(windows) {
-            eprintln!("  Or for this terminal only:");
-            eprintln!("    . $HOME\\.merlint\\env.ps1");
-        } else {
-            eprintln!("  Or for this terminal only:");
-            eprintln!("    source ~/.merlint/env");
-        }
+        eprintln!("  For THIS terminal, run:");
+        eprintln!("    source ~/.merlint/env");
     }
 }
 
