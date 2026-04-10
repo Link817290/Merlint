@@ -1,180 +1,201 @@
-```
-        /\
-       /  \        merlint
-      /____\       Agent Token Optimizer
-      (O  O)
-       <>
-      /|  |\
-     *---+~
-```
+<p align="center">
+  <img src="assets/logo.png" alt="merlint" width="80" height="80">
+</p>
 
-# merlint
+<h1 align="center">merlint</h1>
 
-**Diagnose. Optimize. Monitor. Repeat.**
+<p align="center">
+  <strong>LLM Agent Token Optimizer</strong><br>
+  Diagnose. Optimize. Monitor. Repeat.
+</p>
 
-merlint 是一个 LLM Agent 效率优化工具，帮你减少 token 浪费、提高缓存命中率、自动生成优化配置。
-
-支持 Claude Code、Codex、OpenAI、Anthropic 等主流 Agent 和 API。
+<p align="center">
+  <a href="https://crates.io/crates/merlint"><img src="https://img.shields.io/crates/v/merlint.svg" alt="crates.io"></a>
+  <a href="https://github.com/Link817290/Merlint/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://github.com/Link817290/Merlint/actions"><img src="https://img.shields.io/github/actions/workflow/status/Link817290/Merlint/ci.yml?branch=main" alt="CI"></a>
+</p>
 
 ---
 
-## 安装
+A transparent proxy that sits between your coding agent and the LLM API, automatically reducing token waste, improving cache hit rates, and tracking spend — with zero config changes to your agent.
 
-**macOS / Linux（一键安装 + 自动代理）：**
+```
+Claude Code (window 1)  ──┐
+Claude Code (window 2)  ──┼──>  merlint proxy :8019  ──>  api.anthropic.com
+Claude Code (window 3)  ──┘
+                                │
+                                ├─ Prune unused tools (~200 tok/tool/req)
+                                ├─ Stable tool ordering for cache hits
+                                ├─ Per-project session tracking
+                                ├─ Spend logging & budget enforcement
+                                └─ Live web dashboard
+```
+
+## Installation
+
+**macOS / Linux (one-line install + auto-proxy):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Link817290/Merlint/main/install.sh | bash
 ```
 
-安装完成后，merlint 代理会在每次打开终端时自动启动，Claude Code 的请求自动经过优化。**无需任何额外配置。**
+After install, merlint proxy starts automatically on every terminal launch. Claude Code requests are optimized transparently — **no extra config needed.**
 
-**Windows（PowerShell 一键安装）：**
+**Windows (PowerShell):**
 
 ```powershell
 irm https://raw.githubusercontent.com/Link817290/Merlint/main/install.ps1 | iex
 ```
 
-**从源码安装（需要 Rust）：**
+**From source (requires Rust):**
 
 ```bash
 cargo install --git https://github.com/Link817290/Merlint.git
 ```
 
-**直接下载二进制：**
+**Binary downloads:** See [Releases](https://github.com/Link817290/Merlint/releases).
 
-前往 [Releases](https://github.com/Link817290/Merlint/releases) 页面下载对应平台的可执行文件。
+## Quick Start
 
----
-
-## 工作原理
-
-```
-Claude Code (窗口1)  ──┐
-Claude Code (窗口2)  ──┼──→  merlint proxy :8019  ──→  api.anthropic.com
-Claude Code (窗口3)  ──┘
-                              │
-                              ├─ 实时优化请求（裁剪工具、合并消息、去重）
-                              ├─ 按项目自动分离会话
-                              └─ 记录 token 用量 & 生成报告
-```
-
-安装后 merlint 自动设置 `ANTHROPIC_BASE_URL`，所有 Claude Code 请求透明经过代理。每个项目窗口独立追踪，互不干扰。
-
----
-
-## 快速开始
-
-安装完即可使用，代理自动运行。以下命令可随时查看状态：
+After install, the proxy runs automatically. Use these commands anytime:
 
 ```bash
-# 查看代理状态
+# Check proxy status
 merlint-status
 
-# 分析最近一次会话
+# Analyze latest session
 merlint latest
 
-# 扫描本地所有 Agent 会话
+# Scan all local agent sessions
 merlint scan
 
-# 自动优化（生成 CLAUDE.md + 工具白名单）
+# Auto-optimize (generate CLAUDE.md + tool whitelist)
 merlint optimize
 
-# 持续监控，自动优化
-merlint monitor
+# View spend report
+merlint spend --days 7
+
+# View waste pattern insights
+merlint spend --insights
 ```
 
-控制代理：
+Proxy control:
 
 ```bash
-merlint-stop     # 停止代理
-merlint-start    # 重启代理
+merlint-stop      # Stop proxy
+merlint-start     # Restart proxy
 ```
 
----
+## Features
 
-## 功能
+### Real-time Proxy Optimization
 
-### 1. 实时代理优化（Proxy）
+Transparent HTTP proxy that intercepts LLM API calls and optimizes them on the fly:
 
-透明 HTTP 代理，拦截 LLM API 调用并实时优化：
-
-- **工具裁剪** — 自动移除未使用的工具定义，每个节省约 200 token/次
-- **系统消息合并** — 合并重复的 system prompt 片段
-- **文件读取缓存** — 去重连续相同的文件读取结果
-- **多会话追踪** — 自动识别不同 Claude Code 窗口，按项目独立统计
+- **Tool pruning** — Removes unused tool definitions, saving ~200 tokens per tool per request
+- **Stable tool ordering** — Sorts tools alphabetically after pruning to maximize Anthropic prompt cache prefix hits
+- **Cache-aware suspension** — Automatically pauses pruning when cache hit rate is high (avoids breaking a good cache)
+- **Per-project warm-start** — Loads tool usage history from spend.db so pruning works from request #1
+- **System message merging** — Merges duplicate system prompt fragments
+- **File read dedup** — Deduplicates consecutive identical file reads
+- **SSE streaming passthrough** — Forwards streaming responses chunk-by-chunk with zero added latency
+- **Multi-session tracking** — Auto-identifies different agent windows by project, tracks independently
 
 ```bash
-# 自定义启动（通常不需要，安装时已自动配置）
+# Custom start (usually not needed — install script configures this)
 merlint proxy --target https://api.anthropic.com --optimize --port 8019
 ```
 
-支持 OpenAI 和 Anthropic 两种 API 格式，自动检测。
+Supports both OpenAI and Anthropic API formats with auto-detection.
 
-### 2. 诊断（Diagnose）
+### Spend Tracking & Budget Control
 
-分析 Agent 会话的 token 使用情况，找出浪费点：
+SQLite-based spend logging with per-session and per-model breakdowns:
 
-- **Token 统计** — 每次 API 调用的 prompt/completion/total token 用量
-- **缓存分析** — prompt 前缀稳定性、缓存命中率、理论最优缓存率
-- **效率检测** — 循环调用、重复读取文件、无效重试
-- **工具利用率** — 定义了多少工具、实际用了几个、哪些从没用过
+```bash
+# Last 7 days spend report
+merlint spend --days 7
+
+# Waste pattern analysis
+merlint spend --insights
+```
+
+Set budget limits via environment variables:
+
+```bash
+export MERLINT_DAILY_LIMIT=5.00     # $5/day hard cap
+export MERLINT_SESSION_LIMIT=2.00   # $2/session cap
+```
+
+Exceeding limits returns HTTP 429 to the agent, preventing runaway costs.
+
+### Diagnostics
+
+Analyze agent session token usage and find waste:
+
+- **Token stats** — Prompt / completion / total per API call
+- **Cache analysis** — Prefix stability, hit rate, theoretical optimum
+- **Efficiency checks** — Loop detection, repeated file reads, useless retries
+- **Tool utilization** — Defined vs. used vs. never-used tools
 
 ```bash
 merlint analyze --source session.jsonl --format claude-code
 ```
 
-### 3. 优化（Optimize）
+### Auto-Optimization
 
-根据诊断结果自动生成优化方案：
+Generate optimized configs based on diagnostic results:
 
-- **裁剪工具** — 移除未使用的工具定义
-- **优化 Prompt** — 重构 system prompt 结构，提高缓存命中
-- **生成配置** — 自动生成 `CLAUDE.md` 和 `.merlint-tools.json`
-- **减少冗余** — 识别重复文件读取和无效重试模式
+- **Prune tools** — Remove unused tool definitions
+- **Optimize prompts** — Restructure system prompts for better caching
+- **Generate configs** — Auto-generate `CLAUDE.md` and `.merlint-tools.json`
 
 ```bash
 merlint optimize --source session.jsonl
 ```
 
-### 4. 监控（Monitor）
+### Live Dashboard
 
-后台持续监控，发现新会话自动分析和优化：
+Web dashboard at `http://localhost:8019/merlint/dashboard` showing:
 
-```bash
-# 每 30 秒检查一次，自动优化
-merlint monitor
+- Total requests, active sessions, tokens saved, estimated cost savings
+- Per-session details with project path, cache hit rate, pruning status
+- Event log (new sessions, optimization actions)
+- Request log (status, latency, tokens saved per request)
+- Auto-refreshes every 2 seconds
 
-# 自定义间隔
-merlint monitor --interval 60
-```
+### Waste Pattern Detection
 
----
+`merlint spend --insights` detects three waste patterns:
 
-## 多会话追踪
+| Pattern | Trigger | Meaning |
+|---------|---------|---------|
+| Repeated Reads | >10 reads, >2x ratio | Agent re-reads the same files excessively |
+| Bloated Context | >100k prompt tokens in >3 reqs | Context window is oversized |
+| Expensive Model | opus/gpt-4 with <100 output tokens | Powerful model used for trivial tasks |
 
-merlint 自动识别不同的 Claude Code 窗口/项目：
+## Multi-Session Tracking
 
-- 通过 system prompt 哈希区分不同项目
-- 每个项目独立的 token 统计和优化器状态
-- 也支持显式 `X-Merlint-Session` 请求头
+merlint automatically identifies different agent windows/projects:
 
-无需任何配置，开多个窗口自动分离。
+- Derives session key from `Primary working directory` in system prompt
+- Each project gets independent token stats and optimizer state
+- Also supports explicit `X-Merlint-Session` header
+- Dashboard shows project path instead of opaque hash
 
----
+No config needed — open multiple windows, sessions auto-separate.
 
-## 支持的格式
+## Supported Formats
 
-| 格式 | 说明 | 自动检测 |
-|------|------|----------|
-| `merlint` | 原生 JSON 格式 | ✓ |
-| `claude-code` | Claude Code JSONL 会话 | ✓ |
-| `codex` | Codex CLI JSON 会话 | ✓ |
+| Format | Description | Auto-detect |
+|--------|-------------|-------------|
+| `merlint` | Native JSON format | Yes |
+| `claude-code` | Claude Code JSONL sessions | Yes |
+| `codex` | Codex CLI JSON sessions | Yes |
 
-merlint 会自动检测文件格式，通常不需要手动指定 `--format`。
+merlint auto-detects file format — `--format` is usually not needed.
 
----
-
-## 报告示例
+## Report Example
 
 ```
 ═══════════════════════════════════════════
@@ -200,25 +221,22 @@ merlint 会自动检测文件格式，通常不需要手动指定 `--format`。
   ✗ Loop: 'Bash' called 5 times consecutively
 ```
 
----
+## Command Reference
 
-## 命令一览
-
-| 命令 | 说明 |
-|------|------|
-| `merlint scan` | 扫描本地 Agent 会话文件 |
-| `merlint latest` | 分析最近一次会话 |
-| `merlint analyze` | 分析指定会话文件 |
-| `merlint optimize` | 生成优化方案并应用 |
-| `merlint monitor` | 持续监控 + 自动优化 |
-| `merlint query` | 查询特定指标 |
-| `merlint proxy` | 启动透明代理 |
-| `merlint-status` | 查看代理运行状态 |
-| `merlint-start` | 启动代理 |
-| `merlint-stop` | 停止代理 |
-
----
+| Command | Description |
+|---------|-------------|
+| `merlint proxy` | Start transparent optimization proxy |
+| `merlint scan` | Scan local agent session files |
+| `merlint latest` | Analyze most recent session |
+| `merlint analyze` | Analyze a specific session file |
+| `merlint optimize` | Generate and apply optimizations |
+| `merlint monitor` | Continuous monitoring + auto-optimize |
+| `merlint query` | Query specific metrics |
+| `merlint spend` | View spend reports and insights |
+| `merlint-status` | Check proxy status |
+| `merlint-start` | Start proxy |
+| `merlint-stop` | Stop proxy |
 
 ## License
 
-MIT
+[MIT](LICENSE)
