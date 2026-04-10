@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,98 +12,154 @@
   --purple: #a371f7;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',monospace; font-size:13px; }
-.header { display:flex; align-items:center; gap:16px; padding:20px 24px 12px; border-bottom:1px solid var(--border); }
-.logo { width:48px; height:48px; image-rendering:pixelated; }
-.title { font-size:20px; font-weight:700; color:#fff; }
+body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono','Noto Sans SC','PingFang SC',monospace; font-size:13px; }
+
+/* Header */
+.header { display:flex; align-items:center; gap:16px; padding:20px 24px 16px; border-bottom:1px solid var(--border); }
+.logo { width:48px; height:48px; image-rendering:pixelated; border-radius:8px; }
+.title { font-size:22px; font-weight:700; color:#fff; }
 .title span { color:var(--accent); }
-.subtitle { color:var(--dim); font-size:12px; }
-.uptime { margin-left:auto; color:var(--dim); font-size:12px; }
-.uptime b { color:var(--green); }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; padding:20px 24px; }
-.card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px; }
-.card h3 { font-size:12px; text-transform:uppercase; color:var(--dim); letter-spacing:1px; margin-bottom:12px; }
-.stat-row { display:flex; justify-content:space-between; margin-bottom:8px; }
-.stat-label { color:var(--dim); }
-.stat-value { color:#fff; font-weight:600; }
-.stat-value.green { color:var(--green); }
-.stat-value.purple { color:var(--purple); }
-.bar-bg { height:8px; background:var(--border); border-radius:4px; overflow:hidden; margin:4px 0; }
-.bar-fill { height:100%; border-radius:4px; transition:width 0.6s ease; }
-.bar-fill.green { background:linear-gradient(90deg,var(--green),#2ea043); }
-.bar-fill.purple { background:linear-gradient(90deg,var(--accent),var(--purple)); }
-.sessions-list { max-height:320px; overflow-y:auto; }
-.session { border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin-bottom:8px; }
-.session-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.subtitle { color:var(--dim); font-size:12px; margin-top:2px; }
+.status-area { margin-left:auto; text-align:right; }
+.status-line { display:flex; align-items:center; gap:6px; justify-content:flex-end; }
+.pulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.status-label { color:var(--green); font-weight:600; font-size:13px; }
+.uptime-text { color:var(--dim); font-size:11px; margin-top:4px; }
+
+/* Stats banner */
+.stats-banner { display:grid; grid-template-columns:repeat(4,1fr); gap:0; padding:0 24px; border-bottom:1px solid var(--border); }
+.stat-box { padding:16px 12px; text-align:center; border-right:1px solid var(--border); }
+.stat-box:last-child { border-right:none; }
+.stat-number { font-size:24px; font-weight:700; color:#fff; line-height:1.2; }
+.stat-number.green { color:var(--green); }
+.stat-number.purple { color:var(--purple); }
+.stat-desc { font-size:11px; color:var(--dim); margin-top:4px; line-height:1.4; }
+
+/* Grid */
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; padding:20px 24px; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:18px; }
+.card-title { font-size:13px; font-weight:700; color:#fff; margin-bottom:4px; }
+.card-hint { font-size:11px; color:var(--dim); margin-bottom:14px; line-height:1.4; }
+
+/* Sessions */
+.sessions-list { max-height:360px; overflow-y:auto; }
+.session { border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:8px; background:var(--bg); }
+.session-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
 .session-key { font-family:monospace; font-size:11px; color:var(--purple); }
 .badge { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:600; }
 .badge.paused { background:rgba(63,185,80,.15); color:var(--green); }
 .badge.active { background:rgba(124,58,237,.15); color:var(--purple); }
-.session-stats { display:flex; gap:16px; font-size:11px; color:var(--dim); }
-.session-stats b { color:var(--text); }
-.events-list { max-height:240px; overflow-y:auto; font-size:11px; }
-.event { padding:4px 0; border-bottom:1px solid var(--border); display:flex; gap:8px; }
+.session-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 16px; font-size:11px; }
+.session-item { display:flex; justify-content:space-between; }
+.session-item-label { color:var(--dim); }
+.session-item-val { color:var(--text); font-weight:600; }
+.session-item-val.green { color:var(--green); }
+
+/* Events */
+.events-list { max-height:280px; overflow-y:auto; font-size:11px; }
+.event { padding:6px 0; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:flex-start; }
 .event:last-child { border-bottom:none; }
-.event-time { color:var(--dim); min-width:56px; }
-.event-kind { min-width:64px; font-weight:600; }
-.event-kind.optimize { color:var(--green); }
-.event-kind.session { color:var(--yellow); }
+.event-time { color:var(--dim); min-width:56px; flex-shrink:0; }
+.event-kind { min-width:56px; flex-shrink:0; font-weight:600; font-size:10px; text-transform:uppercase; padding:1px 6px; border-radius:4px; text-align:center; }
+.event-kind.optimize { background:rgba(63,185,80,.12); color:var(--green); }
+.event-kind.session { background:rgba(210,153,34,.12); color:var(--yellow); }
+.event-kind.info { background:rgba(139,148,158,.12); color:var(--dim); }
 .event-msg { color:var(--text); word-break:break-all; }
-.activity-list { max-height:200px; overflow-y:auto; font-size:11px; }
-.activity { padding:3px 0; display:flex; gap:8px; border-bottom:1px solid var(--border); }
+
+/* Activity */
+.activity-list { max-height:280px; overflow-y:auto; font-size:11px; }
+.activity { padding:5px 0; display:grid; grid-template-columns:56px 40px 56px 1fr; gap:8px; align-items:center; border-bottom:1px solid var(--border); }
 .activity:last-child { border-bottom:none; }
-.pulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.shimmer { background:linear-gradient(90deg,var(--accent),var(--purple),var(--accent)); background-size:200% 100%; -webkit-background-clip:text; -webkit-text-fill-color:transparent; animation:shimmer 3s linear infinite; }
-@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+.activity-time { color:var(--dim); }
+.activity-status { font-weight:600; }
+.activity-status.ok { color:var(--green); }
+.activity-status.err { color:var(--red); }
+.activity-latency { color:var(--dim); }
+.activity-saved { color:var(--green); font-weight:600; }
+
+/* Progress bar */
+.bar-bg { height:6px; background:var(--border); border-radius:3px; overflow:hidden; margin:4px 0; }
+.bar-fill { height:100%; border-radius:3px; transition:width 0.6s ease; }
+.bar-fill.green { background:linear-gradient(90deg,var(--green),#2ea043); }
+
 .refresh-indicator { font-size:10px; color:var(--dim); padding:8px 24px; text-align:right; }
+
+/* Empty state */
+.empty { color:var(--dim); text-align:center; padding:32px 16px; font-size:12px; line-height:1.6; }
+
+/* Responsive */
+@media (max-width:600px) {
+  .stats-banner { grid-template-columns:repeat(2,1fr); }
+  .stat-box:nth-child(2) { border-right:none; }
+  .grid { grid-template-columns:1fr; }
+}
 </style>
 </head>
 <body>
 
 <div class="header">
-  <img id="logo" class="logo" alt="merlint" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAATbUlEQVR42tVae3RcZbXfe3/fOXPmkZlJJpMmadL3g1JaWigtz1ugloKUVylyFZXHEhUVBZcoS7jiVYuKCxRQvK57hcv7odICFmopIo9CK5RHH9A2aZtnkzSTTOZ5zpxzvm/fPyYNVUpJ05Z1PStZazLJnOzf9/1+e//22R9qrWF/FyLCv8Il/xWD3g+AcujMPDIYzKy1JiTY56NaMyIQ0REFgGUKjXjtmVlrFuIjoyzf/8jBkIfyYa01EQmB2Wz2lVf+/sIzr7Xu3G0GTGBgUGcvOfW4OTNnzpw+9Jf/v3agHFM+n3/i0WeWP7ja6YCZ1dNrYzUowWdmgLfbNqR07+wFU6+65rPTj5nqeb6U4rArbYQAfF9JKf6y6q+33/L7qmLt3IZ5ExLjPc/1fdeyDDNoAgGRyNjZdds3bNiz7mf3fvuU+SdrpeFwq2IkAMprv2rVX++67pF5ydMm1ozxHN/xHABgRGQQAiuiIStsAmM4ENrR2fp8+7MXfOuMz39xqSCpWSPi4dqHgwaglUbC1atevOtbDy2eeGHQjNilIgCW17Wcx5gZEWPxiGUZvvJCgdCegd77Xnpg3sVH/ew3NyEIAD5c+3BwAFgzIvakei6d/80L6pdGg1FPqWy+IKQImYH+XCYRje+boGKxSChs+so3peG6/hNrn5rw6fitd30PQCAeHjEc3DIwsK+8n3zv1zOtOVUVcV9pVrwztbOo3ba+DsNAQQIRBaAARMRcLu/7vhTS831p0JJ55295suN7X/8xgEbE8nZ9cgC00kT04otrN63eNbvh2JLraa1Tud6cTnemd+0udFmmBaBxb1gCUWsoFBxCJCLNYFq4cOaZ7z/V+91rb7VtRyt96BgOZgcQXM998J7lJ9TPRZJKcUtfe5+TBeDuQnvICDFrogCSZODyfkkkt+gV83aZLQSiNjlq7qS5z9336mMPrhBSKF99QgDKmWfD+i273x2YUj2p4BTb+7t8AFagmAd0xhRmyfd6MpvyTq9lmkSwd20xk3N8XxECAxtS1idrzp6++MFfPv3qK+ulIbXSnwQA1gwAr619081jvmR3Z3oGnIFtuzdtLq1vVpvrrEbTtAay3plXvhOY1NXUXMwWWBIBgEZABETgvVd1ZeUx445KqsZrPv8fW7c0kSDX9ZTSrHkEjBoWAGYmomLR3vzGttpIbXcu1Vvo25x7c8LZVfes+M+5p8+yCyW3KPYUtiWPNpZcX5x19R8qT3gmXXBIEANrzb6nDClNwwQA13YNwqNrjp4E0+/+6X3AbJqGEISEiKh8pZTWwwYzXC+EhIVisend1uNipziq+H7hrTsev3HO3FkAYJLIF9zJn9548Vd2xZPCtPqXXJZ/aJlUgEgsQfq+Z5dKOSefzmbTuYGBQgYINUM8Gn96xWrn8zc0jK2tSlReePFZ4Uioujox9E+V0gewiQdt5hBBGCIorU0dm09cOn3O3Fme62nWdt4OW9au7Zxqo7pGAyz3tfvsbWtPmzjayhWyOcculhzdz6A5FAwFpFERCSEgIGi2Ljzmguw7uR1/799KPY/ftbJqVHTWqdOqR1ede8GZlfF4dXWCGQ5cLYYLgJmlEFbQ2Na1DWpyX772eq2UkGLr5u2b1u6a37Cwo7nYsmlHMta7/Y3SSfMHnl/55nttKIUjhIiEI7FgBSFJkgAMWmsgQDZIChTBsaYQQilVKBULdn77muac2Xvzw3fmjfx5X5j/1W9cXq7rhwQAEbXW8Xj8J3dff+vNd99x500Tp0x0S44ZsKKxaMlXWSerA6VQqH/Ff1e+uva0995ttovV1bFIPFRDQIjgK8Vae8q1TMsMmIBkmEZfcY8LTk/Bt+0S0aAIGhsaGSDh1eYLxcd+tIZ9vua6K7TS9BFcOqSGZtvWplt/8Out69qS5qikNSpqhpPhhkQsVipIK6BNSUpppX0EtMyAaVkadJ/Tk8r37UzvGChki2QPlDKmJ0MUYtBcLvXAmrVm1RBv1AUROsG7/493HkAMB0GhfTuvnj29jz309PIH1vjd4rj6E0MyUlORqA5WIyiltBHylWLX1aY0QqGQQp3x+t9reW1Xf0tO2kg8fuKMKkpMHzWhpWVz5+b3E1bC1y4CMAChCJnhWCi5J9PV6jf9+MrryvI7JDM3xMJUX9+mjVuf/sOarW/tLLby1OQxFaGoBBhTNcqQplaMihEEIYWCQRKQcvu3p7Y3pXbksRCJxRrHTp4wZpJmIpItu7aEAhXSCrzw/J/GB8YEjBAzVARjrMVAPp0q9Jr1pet+eOXZ5y04AH+GtQPl6HtTqccefnrlIy/3t+dqZH19xeTk2KTr+xJxTFWtgYZSSpCUKIQhPXTX7n61JbOjI93Fhh49qn7ujIWj68b29GW3NrfV1IxGndu68fWJ46fKWB0AaU3sSlvb21NvRuOR6onRyy5ccMlli6PRqFKaCA+gY/mx0QNAS2vbjVf/Ir1Z1ScmzWhIAILSqujaRFQTrQ4IA1kQyLxT3JPvfrf3nX6djtYkk1OO6W/SPV07UzInDGt3T3c9rzxzdsf7fWM6i4uKvt/Z1/Gdc87c+tYauyZrVfrj6qqvWfrNRCJ2/Amzh/zLodYBpbSU4snHnn3v1Y5L5i4tOAXNCgAkSUkSGVL9/VmjkOd810Bnh90ho8G6yY1j47Mn1TfMqqXSrOSO1PE5avjU6aetXP24tJtmja0d37h1zbazLrrll5jefNI4vbyx6t+uXnrp5875wHcxgFZINJym52MACEHMvPQzi1c/8/qfNj4xMTa5nCjKZZ6QUk6nZ+p+J5WsHTV37hnxyjopAtMnjpuYCNZym+TQnMqzSyImUF905rnP/Xn9d/+nvaFuVGOjP3PSuIHeYK5CKusFzymyZs/3hDC1XyQCYYQADoeVKLcdY8Y3PLj89rff2vL0o2ts2yESg+6oYH/ni5c/+fiqN1/Jzpu9sLKy3nGKnlCZQkY21haDczzf0xpIl7SGmkTD4nN/dGxvn2nFQgFKZ20ORPNkte9JR8IhBiAiVlm1+wGlFTReIYwoIAPgoVqJMoZksvqsRfPPWjT/n367Yf1bqU7n/HOvSCSTkYpwyBrlK907kH3utXVTGhvG1ddYpkEkDImuV0okGmprGhVrBeg7bq6UX7XqhYLNba0dRKg1ICKjieQDomYeTtc53EI2WAcIyy5Rayairq6uC+Zfs+iMy46aelQwHEIs34psu5S3bUk0vqaqwgqEg5bju4jAWketsOP7vlYmid5sdsu2dhTypdefOuczsy//8qWagXUJmElaeBjsNOuhF4goBOWVUlhWF/q+e/tP7p197PwT5h4fDgZYK61Y+xoZcrlcMZeeNqZx3Ki6ZGVcCEEoDTJdH3uzhYFCkQgtaTQmEvPnzfDc4iknLHz83tVdnd2ETCIgpIUAW9sKeceDj5MCHSh6pFLbCnvbPYBUvo9AxL3d2St/W/f8U+vOWbTY913FjAC41zVVxqPd3Z1V4YBBmjVbplkVCceCwfqqeENVbEyiqioYEUiZYsEwpCSuTFQHjfi6lzcAoPIVAGeLpd+uLbzR4uzN5CPaAbf9z2yvIHq51PIwKwcAgkIIQADI5fK/v+dPJ5+yAMttiKCyrIfafykkMzMDa+04jmLtsWbNilkz235JmAJY2MVSdTK2ranZ8z0jYJTz3o4u+wcrBiafWvlcu3r0pX7Csk86CABlWwUq9SaZHoZN1beetTuoBGYi6u9LtzbvWfipTzNzOp0plWwhRD6f11pLKQuFQiaTJUHMLARlnaLjeQLRLjllvRWc0u6+dNHz4vFoLBRybJuIykutNddVmZ+bF27dUpxeiafPjGgGwoMDgOXv4OwfqtIJfk9t8Pi7yIgNZSQAaGlqC8tIybazmYzvsWEEPN/LZXOGYXiet3nzlmDAkkIyADDGQhWFor2jp7s3lzWEkES+r0tKRaxAQAhJEpFc1xWDG8ihgJw7MXJiVC+aZNVVBnCEaRQRWJsTrmDtIWgA1JrTOS8RM/P54t2/uP/oybMye9J7UpnpM6e7rtvZ0dHQWJdOp0uO397R8tmLlwak9FwXECwpMRwOmQHlczqXK7geI46tTWpX+b7PgK7r5rK276l9i/HFJ1eWiXDgBEkHegyEJMy4tJLM5Cv+63uFx97MdQ/4A6lUZ0v/vJNPCoasWDTS19fb3tYCwMVCyZDBF/62sm50YuKYMcrzAMsPNLQpRIUViEeCHquC5yYiEfB8pZUgatrZnC/kzQCOn9Q4lNDLvGcAZB9YHcpTCS5LghBroqIuKsMB8pWORKLFgusrnjZjMiBXVMRnzJjplPIrnnkgHDEWnHF2UADukwCZWTEr1omK6OTaUaYkpUEQub6/O5Vu2r7lpDOnzDhu+r6ZgJARQPl7tB4YUuYIKjGW2YSIM8cEp9WZhiHcWDQaMzdu3HjKyae17mrt7U0VCtk1Lzy1q3VrVVXikou/oBVmnVLECmhV7rM+cARKDdZNQgakzTt2rF7951MXTrnltm8rpYjI1ywHNYsAIIz6fSM5DC1lebTx5CMrb735d4mqZF/vAKCuiMQTlaMmjJs2ZcrUynilzypgiDHJqqhlGULQ0M2ZGZiZlWaPYU+2sOy2ZROOMn7zyG0IpIGRKOe5FWZg+A3uyAccTdubr738x6MTszL5nvb2nWecflE4GK+vSyaqKoRhAkrNbJkiHgqg8hGpPBMQMqA0p9LZju7dz656Zuz40u2/u5aVyTKMRhAJs76KSmP48Rw0gPJENTOQ/c7XlkVo0rjGSdl8adOmV7Y3/X382OlViTFTJ89g8AYGOkxDFB0nFk9MmHC0UpqI8oVCW8u7DFDMFV97/aVZx4Tv/NWlZihqRmq0iGOwioXlMgSEOIIAPM83DPn9by/b8FLHFZd/bdOWnezlKjueMLLNbTq0tq8mFAz3DTgzRme/eb5a/Y4bCYXvf6UmWWUAQCbvjbb2XHJSsdc2mnuC+TR8arJtO/Lsr17WeMJJmmMQrCQZAJIf66JHOGZlzYYhVzzxzI63U1df8Y2tTS1Uytb2PLQguXPUknquFaVMJmoNSCmu/3Wgs7eiux/Srfzv87quv1Q5DtsO3fTbikgo8sfXbVDq5s/5k6b46SK9/viDhKJ+1hxwTSYTEIbP6IPYAa01Iv5l5Yvfuuo/v/6lG4OBim3Nu0NdT11QuX7moga3kcOdHb15eHCLDgfg9e3htc0R5WF9tXfenKyFLiASQ3vGWv1uRcnni47P11S454yjqTMrmlORl58LXnnH96FiHASTQCEUh3vQXc7Qfam+W2745Ve+dOOs2fPe2fB2JpONCR8M4ccAO7ra0nTrOvjfjYbBFI4rMzGAAK3MP19PSgfLpDAFW5EMEdy7DdK2eHk3LrOK8UqDyeRSDkJFYA9RAYgjQiGlNULgrQ0bduzYnu7rnXfyItq2QfseemAZ0JTW97+tjzs1ER4Xan+2n6zBIGLhD4oaM2oGBo5YUF+FK3fkzp/CS0YRIIB2QTOwPqiHhMMdcCAia66urr5p2VfGTjff3/mar71Zs48dLNUIyGASxwLCU7pycSi+IKw8pUFr1r7SnuLyl691eZKhNLuKwyYFJDIAA/PeastHAkB5RECE5y1ZuOyO755x1oldXan7HrhvV+suw7C0UgAAGsASA1vc7b/qnvqlmlCDVEWGAwzyGLQGZgAmZgRQAGr4+WeEhz2Urxj48quXkJt1nRbpuL7amzQQtKMj0wPTbqhuW54qdvtGQhCD9lm7vJ/AcJ/+4xM7rSKkYOYx4+pv+vlV4Lctv7G91NIpBIE/2IcaFdD1fH7X/f01p0XHXlFNAnpfzrc/2i/DojxoYwQAQB4iDA+qo9yUaj6yAAZTqlvy0wPCG/BchYhDkZCF2e1O/ybHqjLzzaX3ft6FoLUNZBHvNzL8aJt2hM8LoRBSaEIqrykPsYEMNCSyBuUwFxQwIMG+eR0/BAQZkcXIqDQyAHpfIQ6tn8K95xH0YEuHBgyT5sQjlMMIj4x80CX845sCP3S44oBBEZYb9vJZvfIZC8KD4dRIKVQeXqMApMH8jeBrzJQ4KUDvg+sDyX6o0zMF5ktc8gEBgRCJ4OAnXXJEwQtGAmGCthAkAIPgUoGnVONnp/HD7xcsQ3xsLiEE24fFE2BuPRS1RtJIQRYGCALg4Z+fHLGICdACI8qGtAu+yIIbjjQa+Z8uMKYmlCE08weWAPdHQEKwfVx6FE0+KrTpXVd7QTQjLMKAJmBZZsOi9winlKx99gpgd2c6Nq+67b+mqta6aRGvkDOIYpZkPhCNmRkHSQd5V+fQfGNr5LRrrho9Zy6b9WBGCQQjIB5JAACafZ+dFOn+TOeu5T+9O9fZKw1Ts1Ya4B/j5/1ggDLtEcCQ5uIbrh49Zw5DDKxKoAAiAohhKvkQAGgNymV7gFS/l+8u5dKkPdDufsk/KGL8EJXIksGYWVmnRSUFE0AWoAA6iOI2YgAMwKwRdEm7GfJt1Db4JWDvgzS1r1Eo//hhW0cBEEEtI2iFgYIIEvCgsuihHj3WWmtkxUoxO8gaee9Uocxg5kG2l0Pfj5+TLCSRyWQgiX8aSx9RKzHUJhAAoTQRjMF3eB/HNvTqI6oZIwAiA+KwW7B/uv4PYiCD9W4p3qsAAAAASUVORK5CYII=">
+  <img id="logo" class="logo" alt="merlint" src="data:image/png;base64,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">
   <div>
     <div class="title"><span>merlint</span> dashboard</div>
-    <div class="subtitle">LLM agent token optimizer</div>
+    <div class="subtitle">LLM Agent Token Optimizer - 智能 Token 压缩代理</div>
   </div>
-  <div class="uptime"><span class="pulse"></span>&nbsp; <b>running</b> &mdash; <span id="uptime">0s</span></div>
+  <div class="status-area">
+    <div class="status-line"><span class="pulse"></span><span class="status-label">Running</span></div>
+    <div class="uptime-text">已运行 <span id="uptime">0s</span></div>
+  </div>
+</div>
+
+<!-- Top-level stats -->
+<div class="stats-banner">
+  <div class="stat-box">
+    <div class="stat-number" id="total-req">0</div>
+    <div class="stat-desc">总请求数<br>经过代理的 API 调用次数</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-number purple" id="session-count">0</div>
+    <div class="stat-desc">活跃会话<br>正在监控的 Agent 连接</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-number green" id="total-saved">0</div>
+    <div class="stat-desc">已节省 Token<br>通过裁剪/压缩省下的 Token</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-number green" id="cost-saved">$0.00</div>
+    <div class="stat-desc">预估节省费用<br>按 $4/M token 估算</div>
+  </div>
 </div>
 
 <div class="grid">
+  <!-- Sessions card -->
   <div class="card">
-    <h3>Overview</h3>
-    <div class="stat-row"><span class="stat-label">Total Requests</span><span class="stat-value" id="total-req">0</span></div>
-    <div class="stat-row"><span class="stat-label">Active Sessions</span><span class="stat-value purple" id="session-count">0</span></div>
-    <div class="stat-row"><span class="stat-label">Tokens Saved</span><span class="stat-value green" id="total-saved">0</span></div>
-    <div class="stat-row"><span class="stat-label">Est. Cost Saved</span><span class="stat-value green" id="cost-saved">$0.00</span></div>
-    <div style="margin-top:12px">
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-bottom:2px">
-        <span>Optimization progress</span><span id="opt-pct">0%</span>
-      </div>
-      <div class="bar-bg"><div class="bar-fill green" id="opt-bar" style="width:0%"></div></div>
+    <div class="card-title">会话列表</div>
+    <div class="card-hint">每个 Agent 会话的实时状态。PRUNE = 正在裁剪优化，CACHE = 缓存命中、暂停裁剪。</div>
+    <div class="sessions-list" id="sessions">
+      <div class="empty">暂无活跃会话<br>启动 Claude Code 并配置 ANTHROPIC_BASE_URL 后会自动出现</div>
     </div>
   </div>
 
+  <!-- Events card -->
   <div class="card">
-    <h3>Sessions</h3>
-    <div class="sessions-list" id="sessions"></div>
+    <div class="card-title">事件日志</div>
+    <div class="card-hint">系统事件记录：新会话接入、Token 优化操作等。</div>
+    <div class="events-list" id="events">
+      <div class="empty">等待事件...</div>
+    </div>
   </div>
 
+  <!-- Activity card -->
   <div class="card">
-    <h3>Events</h3>
-    <div class="events-list" id="events"></div>
-  </div>
-
-  <div class="card">
-    <h3>Activity</h3>
-    <div class="activity-list" id="activity"></div>
+    <div class="card-title">请求记录</div>
+    <div class="card-hint">最近 20 条 API 请求的时间、状态码、延迟和节省情况。</div>
+    <div class="activity-list" id="activity">
+      <div class="empty">等待请求...</div>
+    </div>
   </div>
 </div>
 
-<div class="refresh-indicator">auto-refresh every 2s</div>
-
-<!-- Logo served inline as emoji fallback; replace src with your SVG data URI -->
+<div class="refresh-indicator">每 2 秒自动刷新</div>
 
 <script>
 function fmt(n) {
@@ -112,9 +168,9 @@ function fmt(n) {
   return n.toString();
 }
 function fmtTime(s) {
-  if (s < 60) return s+'s';
-  if (s < 3600) return Math.floor(s/60)+'m '+s%60+'s';
-  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
+  if (s < 60) return s+'秒';
+  if (s < 3600) return Math.floor(s/60)+'分'+s%60+'秒';
+  return Math.floor(s/3600)+'时'+Math.floor((s%3600)/60)+'分';
 }
 
 async function refresh() {
@@ -130,50 +186,63 @@ async function refresh() {
     document.getElementById('total-saved').textContent = fmt(totalSaved);
     document.getElementById('cost-saved').textContent = '$'+(totalSaved * 0.000004).toFixed(4);
 
-    const pct = Math.min(100, Math.round(totalSaved / 1000));
-    document.getElementById('opt-pct').textContent = pct+'%';
-    document.getElementById('opt-bar').style.width = pct+'%';
-
     // Sessions
     const sc = document.getElementById('sessions');
-    sc.innerHTML = d.sessions.map(s => {
-      const key = s.key.length > 20 ? s.key.slice(0,20)+'...' : s.key;
-      const badge = s.pruning_suspended
-        ? '<span class="badge paused">CACHE</span>'
-        : '<span class="badge active">PRUNE</span>';
-      return `<div class="session">
-        <div class="session-header"><span class="session-key">${key}</span>${badge}</div>
-        <div class="session-stats">
-          <span>reqs <b>${s.request_count}</b></span>
-          <span>saved <b style="color:var(--green)">${fmt(s.tokens_saved > 0 ? s.tokens_saved : 0)}</b></span>
-          <span>tools <b>${s.tools_tracked}</b></span>
-          <span>cache <b>${s.api_cache_hit_rate}%</b></span>
-        </div>
-      </div>`;
-    }).join('');
+    if (d.sessions.length === 0) {
+      sc.innerHTML = '<div class="empty">暂无活跃会话<br>启动 Claude Code 并配置 ANTHROPIC_BASE_URL 后会自动出现</div>';
+    } else {
+      sc.innerHTML = d.sessions.map(s => {
+        const key = s.key.length > 24 ? s.key.slice(0,24)+'...' : s.key;
+        const badge = s.pruning_suspended
+          ? '<span class="badge paused">CACHE</span>'
+          : '<span class="badge active">PRUNE</span>';
+        const savedVal = s.tokens_saved > 0 ? s.tokens_saved : 0;
+        return `<div class="session">
+          <div class="session-header"><span class="session-key">${key}</span>${badge}</div>
+          <div class="session-grid">
+            <div class="session-item"><span class="session-item-label">请求数</span><span class="session-item-val">${s.request_count}</span></div>
+            <div class="session-item"><span class="session-item-label">已节省</span><span class="session-item-val green">${fmt(savedVal)} tokens</span></div>
+            <div class="session-item"><span class="session-item-label">跟踪工具</span><span class="session-item-val">${s.tools_tracked} 个</span></div>
+            <div class="session-item"><span class="session-item-label">缓存命中</span><span class="session-item-val">${s.api_cache_hit_rate}%</span></div>
+            <div class="session-item"><span class="session-item-label">总 Token</span><span class="session-item-val">${fmt(s.total_tokens)}</span></div>
+            <div class="session-item"><span class="session-item-label">延迟合计</span><span class="session-item-val">${s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms'}</span></div>
+          </div>
+        </div>`;
+      }).join('');
+    }
 
     // Events
     const ev = document.getElementById('events');
-    ev.innerHTML = (d.events||[]).map(e => {
-      const cls = e.kind === 'optimize' ? 'optimize' : 'session';
-      return `<div class="event">
-        <span class="event-time">${e.time}</span>
-        <span class="event-kind ${cls}">${e.kind}</span>
-        <span class="event-msg">${e.message}</span>
-      </div>`;
-    }).join('');
+    if (!d.events || d.events.length === 0) {
+      ev.innerHTML = '<div class="empty">等待事件...</div>';
+    } else {
+      ev.innerHTML = d.events.map(e => {
+        const cls = e.kind === 'optimize' ? 'optimize' : e.kind === 'session' ? 'session' : 'info';
+        const kindLabel = e.kind === 'optimize' ? '优化' : e.kind === 'session' ? '会话' : '信息';
+        return `<div class="event">
+          <span class="event-time">${e.time}</span>
+          <span class="event-kind ${cls}">${kindLabel}</span>
+          <span class="event-msg">${e.message}</span>
+        </div>`;
+      }).join('');
+    }
 
     // Activity
     const ac = document.getElementById('activity');
-    ac.innerHTML = (d.activity||[]).map(a => {
-      const saved = a.tokens_saved ? `<span style="color:var(--green)">-${fmt(a.tokens_saved)}</span>` : '';
-      return `<div class="activity">
-        <span style="color:var(--dim);min-width:56px">${a.time}</span>
-        <span style="min-width:32px">${a.status}</span>
-        <span style="min-width:48px">${a.latency_ms}ms</span>
-        ${saved}
-      </div>`;
-    }).join('');
+    if (!d.activity || d.activity.length === 0) {
+      ac.innerHTML = '<div class="empty">等待请求...</div>';
+    } else {
+      ac.innerHTML = d.activity.map(a => {
+        const statusCls = a.status >= 200 && a.status < 400 ? 'ok' : 'err';
+        const saved = a.tokens_saved ? `<span class="activity-saved">-${fmt(a.tokens_saved)}</span>` : '<span style="color:var(--dim)">—</span>';
+        return `<div class="activity">
+          <span class="activity-time">${a.time}</span>
+          <span class="activity-status ${statusCls}">${a.status}</span>
+          <span class="activity-latency">${a.latency_ms}ms</span>
+          ${saved}
+        </div>`;
+      }).join('');
+    }
 
   } catch(e) { console.error('refresh failed', e); }
 }
