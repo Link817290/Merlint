@@ -68,6 +68,10 @@ pub struct TraceSession {
     pub id: String,
     pub started_at: DateTime<Utc>,
     pub entries: Vec<TraceEntry>,
+    /// Optional key identifying which Claude Code window/project this session belongs to.
+    /// Derived from system prompt hash or explicit header.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_session_key: Option<String>,
 }
 
 impl TraceSession {
@@ -76,6 +80,7 @@ impl TraceSession {
             id: Uuid::new_v4().to_string(),
             started_at: Utc::now(),
             entries: Vec::new(),
+            meta_session_key: None,
         }
     }
 

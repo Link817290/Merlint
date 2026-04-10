@@ -1,10 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
 
 use merlint::history;
-use merlint::models::trace::TraceSession;
 use merlint::proxy;
 
 use super::helpers::run_and_print_report;
@@ -24,13 +20,11 @@ pub async fn run(
             .init();
     }
 
-    let session = Arc::new(Mutex::new(TraceSession::new()));
-    let session_for_shutdown = session.clone();
-    let output_path = output.clone();
-    let is_daemon = daemon;
+    // Create multi-session store
+    let store = proxy::session_store::new_session_store(optimize);
 
-    let transformer = if optimize {
-        let tx = proxy::transformer::new_shared_transformer();
+    // Load historical tool data into the store
+    if optimize {
         if let Ok(db) = history::db::HistoryDb::open() {
             if let (Ok(freq), Ok(total)) = (db.tool_frequency(), db.session_count()) {
                 if total >= 3 {
@@ -38,61 +32,96 @@ pub async fn run(
                         .iter()
                         .map(|f| (f.tool_name.clone(), f.session_count))
                         .collect();
-                    let mut t = tx.try_lock().expect("transformer lock");
-                    t.load_history(&freq_data, total);
-                    if !is_daemon {
+                    let mut s = store.lock().await;
+                    s.set_history(freq_data, total);
+                    if !daemon {
                         eprintln!("Loaded tool history from {} sessions", total);
-                    }
-                }
-            }
-        }
-        Some(tx)
-    } else {
-        None
-    };
-
-    let transformer_for_shutdown = transformer.clone();
-
-    let config = proxy::server::ProxyConfig {
-        listen_port: port,
-        target_url: target,
-        api_key,
-        live_trace_file: Some(output),
-        optimize,
-    };
-
-    tokio::select! {
-        result = proxy::server::run_proxy(config, session.clone(), transformer.clone()) => {
-            result?;
-        }
-        _ = tokio::signal::ctrl_c() => {
-            if !is_daemon { eprintln!("\n\nShutting down proxy..."); }
-
-            let session = session_for_shutdown.lock().await;
-            if let Ok(json) = serde_json::to_string_pretty(&*session) {
-                let _ = std::fs::write(&output_path, &json);
-                if !is_daemon { eprintln!("Traces saved to {}", output_path.display()); }
-            }
-            if !is_daemon && !session.entries.is_empty() {
-                run_and_print_report(&session);
-            }
-
-            if let Some(ref tx) = transformer_for_shutdown {
-                let t = tx.lock().await;
-                let usage = t.tool_usage_snapshot();
-                if !usage.is_empty() {
-                    if let Ok(db) = history::db::HistoryDb::open() {
-                        let sid = &session.id;
-                        if let Err(e) = db.store_tool_usage(sid, &usage) {
-                            eprintln!("Failed to persist tool usage: {}", e);
-                        } else if !is_daemon {
-                            eprintln!("Tool usage saved ({} tools tracked)", usage.len());
-                        }
                     }
                 }
             }
         }
     }
 
+    let store_for_shutdown = store.clone();
+    let output_path = output.clone();
+    let is_daemon = daemon;
+
+    // Use the output path's parent as the trace directory
+    let trace_dir = output.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&trace_dir)?;
+
+    let config = proxy::server::ProxyConfig {
+        listen_port: port,
+        target_url: target,
+        api_key,
+        live_trace_dir: Some(trace_dir),
+        optimize,
+    };
+
+    tokio::select! {
+        result = proxy::server::run_proxy(config, store.clone()) => {
+            result?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            if !is_daemon { eprintln!("\n\nShutting down proxy..."); }
+
+            let store_guard = store_for_shutdown.lock().await;
+            let sessions = store_guard.all_slots();
+            let session_count = sessions.len();
+
+            for (key, session, tx_opt) in &sessions {
+                // Save trace file per session
+                let file_name = if *key == "default" {
+                    output_path.clone()
+                } else {
+                    let dir = output_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    dir.join(format!("session-{}.json", sanitize_key(key)))
+                };
+
+                if let Ok(json) = serde_json::to_string_pretty(session) {
+                    let _ = std::fs::write(&file_name, &json);
+                    if !is_daemon {
+                        eprintln!("Traces saved: {} ({} entries) -> {}",
+                            key, session.entries.len(), file_name.display());
+                    }
+                }
+
+                // Print report for non-empty sessions
+                if !is_daemon && !session.entries.is_empty() {
+                    if session_count > 1 {
+                        eprintln!("\n--- Session: {} ---", key);
+                    }
+                    run_and_print_report(session);
+                }
+
+                // Persist tool usage to history DB
+                if let Some(tx) = tx_opt {
+                    let t = tx.lock().await;
+                    let usage = t.tool_usage_snapshot();
+                    if !usage.is_empty() {
+                        if let Ok(db) = history::db::HistoryDb::open() {
+                            let sid = &session.id;
+                            if let Err(e) = db.store_tool_usage(sid, &usage) {
+                                eprintln!("Failed to persist tool usage: {}", e);
+                            } else if !is_daemon {
+                                eprintln!("Tool usage saved ({} tools tracked)", usage.len());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !is_daemon && session_count > 1 {
+                eprintln!("\n{} sessions tracked in total.", session_count);
+            }
+        }
+    }
+
     Ok(())
+}
+
+fn sanitize_key(key: &str) -> String {
+    key.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
 }

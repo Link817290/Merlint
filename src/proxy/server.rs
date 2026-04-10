@@ -10,30 +10,29 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use crate::models::api::{
     ChatRequest, ChatResponse, Choice, FunctionCall, FunctionDef, Message, MessageContent, Tool,
     ToolCall, Usage,
 };
-use crate::models::trace::{Provider, TraceEntry, TraceSession};
-use super::transformer::{is_file_write_tool, SharedTransformer};
+use crate::models::trace::{Provider, TraceEntry};
+use super::session_store::{extract_session_key, SharedSessionStore};
+use super::transformer::is_file_write_tool;
 
 pub struct ProxyConfig {
     pub listen_port: u16,
     pub target_url: String,
     pub api_key: Option<String>,
-    /// When set, append each trace entry to this file as it arrives
-    pub live_trace_file: Option<PathBuf>,
+    /// When set, write traces to files under this directory (one per session)
+    pub live_trace_dir: Option<PathBuf>,
     /// Enable real-time request optimization
     pub optimize: bool,
 }
 
 pub async fn run_proxy(
     config: ProxyConfig,
-    session: Arc<Mutex<TraceSession>>,
-    transformer: Option<SharedTransformer>,
+    store: SharedSessionStore,
 ) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", config.listen_port);
     let listener = TcpListener::bind(&addr).await?;
@@ -42,6 +41,7 @@ pub async fn run_proxy(
     if config.optimize {
         info!("real-time optimization ENABLED");
     }
+    info!("multi-session tracking ENABLED");
 
     let config = Arc::new(config);
     let client = Arc::new(reqwest::Client::new());
@@ -50,17 +50,15 @@ pub async fn run_proxy(
         let (stream, peer) = listener.accept().await?;
         let io = TokioIo::new(stream);
         let config = config.clone();
-        let session = session.clone();
-        let transformer = transformer.clone();
+        let store = store.clone();
         let client = client.clone();
 
         tokio::spawn(async move {
             let config = config.clone();
-            let session = session.clone();
-            let transformer = transformer.clone();
+            let store = store.clone();
             let client = client.clone();
             let service = service_fn(move |req| {
-                handle_request(req, config.clone(), session.clone(), transformer.clone(), client.clone())
+                handle_request(req, config.clone(), store.clone(), client.clone())
             });
             if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
                 if !e.to_string().contains("connection closed") {
@@ -74,8 +72,7 @@ pub async fn run_proxy(
 async fn handle_request(
     req: Request<Incoming>,
     config: Arc<ProxyConfig>,
-    session: Arc<Mutex<TraceSession>>,
-    transformer: Option<SharedTransformer>,
+    store: SharedSessionStore,
     client: Arc<reqwest::Client>,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let method = req.method().clone();
@@ -88,15 +85,25 @@ async fn handle_request(
     let is_chat = path.contains("/chat/completions") || path.contains("/messages")
         || path.contains("/completions");
 
+    // Extract session key for multi-session routing
+    let session_key = if is_chat {
+        extract_session_key(&headers, &body_bytes)
+    } else {
+        "default".to_string()
+    };
+
     let target_url = format!("{}{}", config.target_url.trim_end_matches('/'), path);
 
     // Optionally transform the request body
     let is_anthropic_native = provider == Provider::Anthropic;
     let (final_body, transform_stats) = if is_chat && config.optimize {
-        if let Some(ref tx) = transformer {
+        // Get (or create) the transformer for this session
+        let mut store_guard = store.lock().await;
+        let slot = store_guard.get_or_create(&session_key);
+        if let Some(ref tx) = slot.transformer {
+            let tx = tx.clone();
+            drop(store_guard); // release store lock before locking transformer
             if is_anthropic_native {
-                // Anthropic-native format: use raw JSON transformation
-                // This only modifies messages, leaving tools and other fields intact
                 if let Ok(mut raw_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
                     let mut t = tx.lock().await;
                     let result = t.transform_raw(&mut raw_body);
@@ -113,17 +120,14 @@ async fn handle_request(
                     (body_bytes.clone(), None)
                 }
             } else {
-                // OpenAI-compatible format: use typed transformation
                 if let Ok(chat_req) = serde_json::from_slice::<ChatRequest>(&body_bytes) {
                     let mut t = tx.lock().await;
                     let result = t.transform(chat_req);
-
                     let stats = if result.estimated_tokens_saved > 0 {
                         Some((result.tools_pruned, result.messages_merged, result.estimated_tokens_saved))
                     } else {
                         None
                     };
-
                     match serde_json::to_vec(&result.request) {
                         Ok(new_body) => (Bytes::from(new_body), stats),
                         Err(_) => (body_bytes.clone(), None),
@@ -133,6 +137,7 @@ async fn handle_request(
                 }
             }
         } else {
+            drop(store_guard);
             (body_bytes.clone(), None)
         }
     } else {
@@ -185,78 +190,25 @@ async fn handle_request(
         .map(|ct| ct.contains("text/event-stream"))
         .unwrap_or(false);
 
-    // Buffer the full response for trace recording.
-    // For SSE streams, this collects all chunks then forwards the complete buffer.
-    // The parse_response() function already handles merging SSE chunks for traces.
     let resp_bytes = response.bytes().await.unwrap_or_default();
     let latency_ms = start.elapsed().as_millis() as u64;
 
     // Record trace if this is a chat completion
     if is_chat && status.is_success() {
-        // Record tool usage from response (works for both formats)
-        if let Some(ref tx) = transformer {
-            if is_anthropic_native {
-                // Anthropic response: tool_use blocks in content array
-                if let Ok(resp_val) = serde_json::from_slice::<serde_json::Value>(&resp_bytes) {
-                    let mut used_tools = Vec::new();
-                    let mut write_paths = Vec::new();
-                    if let Some(content) = resp_val.get("content").and_then(|v| v.as_array()) {
-                        for block in content {
-                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                                    used_tools.push(name.to_string());
-                                    if is_file_write_tool(name) {
-                                        if let Some(p) = extract_write_path_from_value(block.get("input")) {
-                                            write_paths.push(p);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if !used_tools.is_empty() {
-                        let mut t = tx.lock().await;
-                        t.record_tool_usage(&used_tools);
-                        for p in &write_paths {
-                            t.invalidate_file(p);
-                        }
-                    }
-                }
-            } else {
-                // OpenAI response: tool_calls in choices[].message
-                if let Ok(chat_resp) = parse_response(&resp_bytes) {
-                    let mut used_tools = Vec::new();
-                    let mut write_paths = Vec::new();
-                    for choice in &chat_resp.choices {
-                        if let Some(ref msg) = choice.message {
-                            if let Some(ref calls) = msg.tool_calls {
-                                for call in calls {
-                                    if let Some(ref f) = call.function {
-                                        used_tools.push(f.name.clone());
-                                        if is_file_write_tool(&f.name) {
-                                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&f.arguments) {
-                                                if let Some(p) = extract_write_path_from_value(Some(&v)) {
-                                                    write_paths.push(p);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if !used_tools.is_empty() {
-                        let mut t = tx.lock().await;
-                        t.record_tool_usage(&used_tools);
-                        for p in &write_paths {
-                            t.invalidate_file(p);
-                        }
-                    }
-                }
+        // Record tool usage from response
+        {
+            let mut store_guard = store.lock().await;
+            let slot = store_guard.get_or_create(&session_key);
+            if let Some(ref tx) = slot.transformer {
+                let tx = tx.clone();
+                drop(store_guard);
+                record_tool_usage_from_response(
+                    &tx, is_anthropic_native, &resp_bytes,
+                ).await;
             }
         }
 
-        // Build trace entry — convert Anthropic format to internal types if needed
+        // Build trace entry
         let (chat_req_opt, chat_resp_opt) = if is_anthropic_native {
             let req = serde_json::from_slice::<serde_json::Value>(&body_bytes)
                 .ok()
@@ -277,37 +229,44 @@ async fn handle_request(
             let entry_id = entry.id.clone();
             let tokens = entry.total_tokens().unwrap_or(0);
 
-            // Live write to file if configured
-            if let Some(ref path) = config.live_trace_file {
-                let mut sess = session.lock().await;
-                sess.add_entry(entry);
-                if let Ok(json) = serde_json::to_string(&*sess) {
-                    let _ = std::fs::write(path, &json);
+            // Store entry in the session
+            {
+                let mut store_guard = store.lock().await;
+                let slot = store_guard.get_or_create(&session_key);
+                slot.session.add_entry(entry);
+
+                // Live write to file if configured
+                if let Some(ref dir) = config.live_trace_dir {
+                    let file_name = format!("session-{}.json", sanitize_key(&session_key));
+                    let path = dir.join(file_name);
+                    if let Ok(json) = serde_json::to_string(&slot.session) {
+                        let _ = std::fs::write(&path, &json);
+                    }
                 }
-            } else {
-                session.lock().await.add_entry(entry);
             }
 
-            // Log with optimization info
+            // Log with session key and optimization info
+            let key_short = if session_key.len() > 12 {
+                &session_key[..12]
+            } else {
+                &session_key
+            };
             if let Some((pruned, merged, saved)) = transform_stats {
                 info!(
-                    "[trace {}] {} tokens, {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
-                    &entry_id[..8], tokens, latency_ms, pruned, merged, saved
+                    "[{}][trace {}] {} tokens, {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
+                    key_short, &entry_id[..8], tokens, latency_ms, pruned, merged, saved
                 );
             } else {
                 info!(
-                    "[trace {}] {} tokens, {}ms",
-                    &entry_id[..8], tokens, latency_ms
+                    "[{}][trace {}] {} tokens, {}ms",
+                    key_short, &entry_id[..8], tokens, latency_ms
                 );
             }
-        } else {
-            // Still log optimization stats even if trace entry couldn't be built
-            if let Some((pruned, merged, saved)) = transform_stats {
-                info!(
-                    "[proxy] {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
-                    latency_ms, pruned, merged, saved
-                );
-            }
+        } else if let Some((pruned, merged, saved)) = transform_stats {
+            info!(
+                "[{}][proxy] {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
+                session_key, latency_ms, pruned, merged, saved
+            );
         }
     }
 
@@ -320,7 +279,6 @@ async fn handle_request(
         resp_builder = resp_builder.header(key.as_str(), value);
     }
 
-    // Preserve SSE content-type so the client can parse SSE frames
     if is_sse {
         resp_builder = resp_builder.header("content-type", "text/event-stream");
     }
@@ -330,19 +288,88 @@ async fn handle_request(
         .unwrap())
 }
 
+/// Record tool usage from the API response into the transformer.
+async fn record_tool_usage_from_response(
+    tx: &super::transformer::SharedTransformer,
+    is_anthropic_native: bool,
+    resp_bytes: &[u8],
+) {
+    if is_anthropic_native {
+        if let Ok(resp_val) = serde_json::from_slice::<serde_json::Value>(resp_bytes) {
+            let mut used_tools = Vec::new();
+            let mut write_paths = Vec::new();
+            if let Some(content) = resp_val.get("content").and_then(|v| v.as_array()) {
+                for block in content {
+                    if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                            used_tools.push(name.to_string());
+                            if is_file_write_tool(name) {
+                                if let Some(p) = extract_write_path_from_value(block.get("input")) {
+                                    write_paths.push(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !used_tools.is_empty() {
+                let mut t = tx.lock().await;
+                t.record_tool_usage(&used_tools);
+                for p in &write_paths {
+                    t.invalidate_file(p);
+                }
+            }
+        }
+    } else {
+        if let Ok(chat_resp) = parse_response(resp_bytes) {
+            let mut used_tools = Vec::new();
+            let mut write_paths = Vec::new();
+            for choice in &chat_resp.choices {
+                if let Some(ref msg) = choice.message {
+                    if let Some(ref calls) = msg.tool_calls {
+                        for call in calls {
+                            if let Some(ref f) = call.function {
+                                used_tools.push(f.name.clone());
+                                if is_file_write_tool(&f.name) {
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&f.arguments) {
+                                        if let Some(p) = extract_write_path_from_value(Some(&v)) {
+                                            write_paths.push(p);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !used_tools.is_empty() {
+                let mut t = tx.lock().await;
+                t.record_tool_usage(&used_tools);
+                for p in &write_paths {
+                    t.invalidate_file(p);
+                }
+            }
+        }
+    }
+}
+
+/// Sanitize a session key for use as a filename.
+fn sanitize_key(key: &str) -> String {
+    key.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
 /// Parse response bytes as ChatResponse, handling both regular JSON and SSE streaming formats.
 fn parse_response(bytes: &[u8]) -> Result<ChatResponse, String> {
-    // Try direct JSON parse first
     if let Ok(resp) = serde_json::from_slice::<ChatResponse>(bytes) {
         return Ok(resp);
     }
 
-    // Try parsing as a generic JSON value to build a ChatResponse
     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(bytes) {
         return chatresponse_from_value(&val);
     }
 
-    // Try SSE format: each line is "data: {...}" — collect and merge chunks
     let text = String::from_utf8_lossy(bytes);
     let mut chunks: Vec<serde_json::Value> = Vec::new();
     for line in text.lines() {
@@ -362,21 +389,16 @@ fn parse_response(bytes: &[u8]) -> Result<ChatResponse, String> {
         return Err("no parseable JSON found in response".into());
     }
 
-    // Merge SSE chunks into a single ChatResponse
     merge_sse_chunks(&chunks)
 }
 
 fn chatresponse_from_value(val: &serde_json::Value) -> Result<ChatResponse, String> {
-    // Build a ChatResponse from arbitrary JSON, being lenient about field names
     let id = val.get("id").and_then(|v| v.as_str()).map(String::from);
     let model = val.get("model").and_then(|v| v.as_str()).map(String::from);
 
-    // Try to find choices
     let choices = if let Some(arr) = val.get("choices").and_then(|v| v.as_array()) {
         arr.iter().filter_map(|c| serde_json::from_value::<Choice>(c.clone()).ok()).collect()
     } else {
-        // Some APIs put the message at top level (no choices array)
-        // Try to construct a synthetic choice from top-level content/role
         let mut synthetic = Vec::new();
         if let Some(content) = val.get("content").or(val.get("text")).or(val.get("result")) {
             let msg = Message {
@@ -397,7 +419,6 @@ fn chatresponse_from_value(val: &serde_json::Value) -> Result<ChatResponse, Stri
         synthetic
     };
 
-    // Try to find usage
     let usage = val.get("usage").and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok());
 
     if choices.is_empty() && usage.is_none() {
@@ -418,14 +439,12 @@ fn merge_sse_chunks(chunks: &[serde_json::Value]) -> Result<ChatResponse, String
         return Err("no SSE chunks".into());
     }
 
-    // Use the last chunk for metadata (often contains usage)
     let last = &chunks[chunks.len() - 1];
     let first = &chunks[0];
 
     let id = first.get("id").and_then(|v| v.as_str()).map(String::from);
     let model = first.get("model").and_then(|v| v.as_str()).map(String::from);
 
-    // Concatenate all delta content
     let mut full_content = String::new();
     let mut tool_calls_map: std::collections::BTreeMap<u32, (String, String, String)> = std::collections::BTreeMap::new();
     let mut finish_reason = None;
@@ -434,11 +453,9 @@ fn merge_sse_chunks(chunks: &[serde_json::Value]) -> Result<ChatResponse, String
         if let Some(choices) = chunk.get("choices").and_then(|v| v.as_array()) {
             for choice in choices {
                 if let Some(delta) = choice.get("delta") {
-                    // Text content
                     if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
                         full_content.push_str(content);
                     }
-                    // Tool calls in delta
                     if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                         for tc in tcs {
                             let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
@@ -508,7 +525,6 @@ fn detect_provider(path: &str, headers: &hyper::HeaderMap) -> Provider {
     Provider::Unknown
 }
 
-/// Extract file path from a tool input/arguments JSON value
 fn extract_write_path_from_value(val: Option<&serde_json::Value>) -> Option<String> {
     let v = val?;
     for key in &["filePath", "file_path", "path", "filename", "file"] {
@@ -519,13 +535,11 @@ fn extract_write_path_from_value(val: Option<&serde_json::Value>) -> Option<Stri
     None
 }
 
-/// Convert Anthropic-native request JSON to internal ChatRequest for trace storage
 fn anthropic_request_to_chat_request(val: &serde_json::Value) -> Option<ChatRequest> {
     let model = val.get("model").and_then(|v| v.as_str()).map(String::from);
 
     let mut messages = Vec::new();
 
-    // System prompt (top-level field in Anthropic format)
     if let Some(sys) = val.get("system") {
         let sys_text = match sys {
             serde_json::Value::String(s) => s.clone(),
@@ -554,7 +568,6 @@ fn anthropic_request_to_chat_request(val: &serde_json::Value) -> Option<ChatRequ
         }
     }
 
-    // Regular messages
     if let Some(msgs) = val.get("messages").and_then(|v| v.as_array()) {
         for msg in msgs {
             let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("user").to_string();
@@ -577,7 +590,6 @@ fn anthropic_request_to_chat_request(val: &serde_json::Value) -> Option<ChatRequ
                 _ => None,
             };
 
-            // Extract tool_use blocks as tool_calls (from assistant messages)
             let tool_calls = if let Some(serde_json::Value::Array(arr)) = msg.get("content") {
                 let calls: Vec<ToolCall> = arr.iter()
                     .filter(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
@@ -599,7 +611,6 @@ fn anthropic_request_to_chat_request(val: &serde_json::Value) -> Option<ChatRequ
                 None
             };
 
-            // Extract tool_call_id from tool_result blocks
             let tool_call_id = if let Some(serde_json::Value::Array(arr)) = msg.get("content") {
                 arr.iter()
                     .find(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_result"))
@@ -618,7 +629,6 @@ fn anthropic_request_to_chat_request(val: &serde_json::Value) -> Option<ChatRequ
         }
     }
 
-    // Convert tools (Anthropic: top-level name/description/input_schema)
     let tools: Vec<Tool> = val.get("tools")
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -645,7 +655,6 @@ fn anthropic_request_to_chat_request(val: &serde_json::Value) -> Option<ChatRequ
     })
 }
 
-/// Convert Anthropic-native response JSON to internal ChatResponse for trace storage
 fn anthropic_response_to_chat_response(val: &serde_json::Value) -> Option<ChatResponse> {
     let id = val.get("id").and_then(|v| v.as_str()).map(String::from);
     let model = val.get("model").and_then(|v| v.as_str()).map(String::from);
@@ -686,7 +695,6 @@ fn anthropic_response_to_chat_response(val: &serde_json::Value) -> Option<ChatRe
         name: None,
     };
 
-    // Map Anthropic usage fields to internal format
     let usage = val.get("usage").map(|u| {
         let input = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
         let output = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
