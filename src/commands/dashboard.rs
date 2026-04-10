@@ -47,6 +47,8 @@ struct SessionInfo {
     tokens_saved: i64,
     tools_tracked: u64,
     total_latency_ms: u64,
+    api_cache_hit_rate: u64,
+    pruning_suspended: bool,
 }
 
 
@@ -142,6 +144,8 @@ async fn fetch_status(client: &reqwest::Client, port: u16) -> anyhow::Result<Pro
                     tokens_saved: s["tokens_saved"].as_i64().unwrap_or(0),
                     tools_tracked: s["tools_tracked"].as_u64().unwrap_or(0),
                     total_latency_ms: s["total_latency_ms"].as_u64().unwrap_or(0),
+                    api_cache_hit_rate: s["api_cache_hit_rate"].as_u64().unwrap_or(0),
+                    pruning_suspended: s["pruning_suspended"].as_bool().unwrap_or(false),
                 })
                 .collect()
         })
@@ -464,32 +468,29 @@ fn render_session_card(f: &mut Frame, area: Rect, session: &SessionInfo) {
         0
     };
 
+    let cache_color = if cache_pct >= 60 { Color::Green } else if cache_pct >= 30 { Color::Yellow } else { Color::Red };
+
+    let prune_status = if session.pruning_suspended {
+        Span::styled(" [paused]", Style::default().fg(Color::Yellow))
+    } else {
+        Span::styled("", Style::default())
+    };
+
     let right_lines = vec![
         Line::from(vec![
             Span::styled("  Cache: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{}%", cache_pct),
-                Style::default()
-                    .fg(if cache_pct >= 60 {
-                        Color::Green
-                    } else if cache_pct >= 30 {
-                        Color::Yellow
-                    } else {
-                        Color::Red
-                    })
-                    .bold(),
-            ),
+            Span::styled(format!("{}%", cache_pct), Style::default().fg(cache_color).bold()),
+            Span::styled(format!("  API: {}%", session.api_cache_hit_rate), Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(Span::styled(
             format!("  {}", make_bar(cache_pct, 20)),
-            Style::default().fg(if cache_pct >= 60 {
-                Color::Green
-            } else if cache_pct >= 30 {
-                Color::Yellow
-            } else {
-                Color::Red
-            }),
+            Style::default().fg(cache_color),
         )),
+        Line::from(vec![
+            Span::styled("  Prune: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{} tools", session.tools_tracked), Style::default().fg(Color::White)),
+            prune_status,
+        ]),
     ];
     let right_widget = Paragraph::new(right_lines);
     f.render_widget(right_widget, cols[1]);

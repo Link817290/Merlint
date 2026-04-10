@@ -71,23 +71,53 @@ impl RequestTransformer {
 
     /// Record cache statistics from an API response to decide whether
     /// tool pruning is worth the cache invalidation cost.
+    ///
+    /// Anthropic's prompt cache has a 5-minute TTL. If the cache is warm
+    /// (high hit rate), pruning tools would invalidate it — costing far
+    /// more tokens than pruning saves.
+    ///
+    /// Timeline: response stats arrive AFTER the request. So by the time
+    /// request #3 runs (first potential prune), we already have stats from
+    /// responses #1 and #2. If those show warm cache, we suspend pruning
+    /// BEFORE it ever fires.
     pub fn record_cache_stats(&mut self, cache_read_tokens: u64, prompt_tokens: u64) {
         self.cache_stats.0 += cache_read_tokens;
         self.cache_stats.1 += prompt_tokens;
 
-        // If cache hit rate > 50%, suspend tool pruning — the cache savings
-        // outweigh the token savings from removing unused tools.
         if self.cache_stats.1 > 0 {
             let hit_rate = self.cache_stats.0 as f64 / self.cache_stats.1 as f64;
-            if hit_rate > 0.5 && self.request_count >= 3 {
+            // Suspend if cache hit rate > 30%. This threshold is deliberately
+            // low because breaking a warm cache costs ~90% of prompt tokens
+            // (full price instead of 10%), while pruning only saves ~4K tokens.
+            // Example: 50K prompt, 30% cached = 15K at 0.1x = 1.5K effective.
+            //          Breaking cache = 15K at 1.0x = 15K. Net loss = 13.5K.
+            //          Pruning saves ~4K. Still a net loss of 9.5K.
+            if hit_rate > 0.3 {
                 if !self.pruning_suspended {
                     self.pruning_suspended = true;
-                    // Clear frozen tools so next request sends full tool set
+                    // If we already froze a pruned set, clear it so the next
+                    // request sends full tools (restore cache compatibility)
                     self.frozen_tools = None;
                 }
-            } else {
+            } else if self.pruning_suspended && hit_rate < 0.1 {
+                // Only resume pruning if cache hit rate drops very low,
+                // indicating the cache is no longer warm (e.g., >5min gap)
                 self.pruning_suspended = false;
             }
+        }
+    }
+
+    /// Check if tool pruning is currently suspended due to warm cache.
+    pub fn is_pruning_suspended(&self) -> bool {
+        self.pruning_suspended
+    }
+
+    /// Get the current cache hit rate (0.0 to 1.0).
+    pub fn cache_hit_rate(&self) -> f64 {
+        if self.cache_stats.1 > 0 {
+            self.cache_stats.0 as f64 / self.cache_stats.1 as f64
+        } else {
+            0.0
         }
     }
 

@@ -380,10 +380,14 @@ async fn handle_status(store: &SharedSessionStore) -> Response<Full<Bytes>> {
 
         let mut tokens_saved: i64 = 0;
         let mut tools_tracked: usize = 0;
+        let mut cache_hit_rate: f64 = 0.0;
+        let mut pruning_suspended = false;
         if let Some(tx) = tx_opt {
             if let Ok(t) = tx.try_lock() {
                 tokens_saved = t.total_tokens_saved();
                 tools_tracked = t.tool_usage_snapshot().len();
+                cache_hit_rate = t.cache_hit_rate();
+                pruning_suspended = t.is_pruning_suspended();
             }
         }
 
@@ -402,6 +406,8 @@ async fn handle_status(store: &SharedSessionStore) -> Response<Full<Bytes>> {
             "total_latency_ms": total_latency,
             "tokens_saved": tokens_saved,
             "tools_tracked": tools_tracked,
+            "api_cache_hit_rate": (cache_hit_rate * 100.0).round() as u64,
+            "pruning_suspended": pruning_suspended,
         }));
     }
 
