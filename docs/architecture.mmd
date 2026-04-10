@@ -1,0 +1,128 @@
+graph TB
+    subgraph Input["Data Sources"]
+        CC["Claude Code sessions"]
+        CX["Codex CLI sessions"]
+        PX["Proxy Mode intercept"]
+        MF["Manual file input"]
+    end
+
+    subgraph Core["Core Engine"]
+        DS["Session Discovery"]
+        PA["Format Parser"]
+
+        subgraph Analyzer["Analyzer Layer"]
+            TA["Token Analyzer"]
+            CA["Cache Analyzer"]
+            EA["Efficiency Analyzer"]
+            TL["Tool Analyzer"]
+        end
+    end
+
+    subgraph Intelligence["Intelligence Layer - NEW"]
+        DB[("SQLite history.db")]
+
+        subgraph Profile["User Profile Engine"]
+            HP["Habit Profiler"]
+            BL["Baseline Calculator"]
+            TD["Trend Detector"]
+        end
+
+        subgraph Rules["Rule Engine"]
+            RL["Rule Learner"]
+            RS["Rule Store"]
+            RV["Rule Validator"]
+        end
+    end
+
+    subgraph Optimizer["Optimizer Layer"]
+        OT["Tool Pruner"]
+        OP["Prompt Restructurer"]
+        OC["Config Generator"]
+        OE["Efficiency Advisor"]
+    end
+
+    subgraph Output["Output Layer"]
+        subgraph Reports["Reports"]
+            RT["Terminal Report"]
+            RJ["JSON Report"]
+            RD["Diff Report - NEW"]
+            RW["Weekly Digest - NEW"]
+        end
+
+        subgraph Actions["Auto Actions"]
+            WC["Write CLAUDE.md"]
+            WT["Write tools allowlist"]
+            WR["Write rules.json - NEW"]
+        end
+    end
+
+    subgraph CLI["CLI Commands"]
+        C1["scan - interactive picker"]
+        C2["latest - newest session"]
+        C3["analyze - specific file"]
+        C4["optimize - generate fixes"]
+        C5["monitor - continuous watch"]
+        C6["report - weekly/monthly - NEW"]
+        C7["proxy - API intercept"]
+        C8["profile - habit summary - NEW"]
+    end
+
+    CC --> DS
+    CX --> DS
+    PX --> PA
+    MF --> PA
+    DS --> PA
+
+    PA --> TA
+    PA --> CA
+    PA --> EA
+    PA --> TL
+
+    TA --> DB
+    CA --> DB
+    EA --> DB
+    TL --> DB
+
+    DB --> HP
+    DB --> BL
+    DB --> TD
+
+    HP --> RL
+    BL --> RL
+    TD --> RL
+    RL --> RS
+
+    TA --> OT
+    CA --> OP
+    EA --> OE
+    TL --> OT
+    RS --> OC
+
+    OT --> RT
+    OP --> RT
+    OC --> WC
+    OC --> WT
+    OE --> RT
+
+    TD --> RD
+    TD --> RW
+    RS --> WR
+
+    C1 --> DS
+    C2 --> DS
+    C3 --> PA
+    C4 --> Optimizer
+    C5 --> DS
+    C6 --> DB
+    C7 --> PX
+    C8 --> Profile
+
+    classDef new fill:#2d5a27,stroke:#4a9,color:#fff
+    classDef existing fill:#1a3a5c,stroke:#4a9,color:#fff
+    classDef data fill:#5c3a1a,stroke:#c84,color:#fff
+    classDef cmd fill:#3a1a5c,stroke:#a4c,color:#fff
+
+    class DB,HP,BL,TD,RL,RS,RV,RD,RW,WR,C6,C8 new
+    class DS,PA,TA,CA,EA,TL,OT,OP,OC,OE,RT,RJ,WC,WT existing
+    class CC,CX,PX,MF data
+    class C1,C2,C3,C4,C5,C7 cmd

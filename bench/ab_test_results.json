@@ -1,0 +1,32 @@
+{
+  "baseline": {
+    "label": "Baseline (22 tools)",
+    "tools_count": 22,
+    "prompt_tokens": 1037,
+    "completion_tokens": 50,
+    "total_tokens": 1087,
+    "elapsed_sec": 3.22
+  },
+  "optimized": {
+    "label": "Optimized (8 tools)",
+    "tools_count": 8,
+    "prompt_tokens": 525,
+    "completion_tokens": 41,
+    "total_tokens": 566,
+    "elapsed_sec": 2.26
+  },
+  "no_tools": {
+    "label": "No tools (reference)",
+    "tools_count": 0,
+    "prompt_tokens": 57,
+    "completion_tokens": 200,
+    "total_tokens": 257,
+    "elapsed_sec": 7.06
+  },
+  "diff": {
+    "tools_removed": 14,
+    "prompt_tokens_saved": 512,
+    "prompt_reduction_pct": 49.373191899710704
+  },
+  "methodology": "True A/B test on Kimi API. Same request, different tool counts."
+}

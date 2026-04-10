@@ -1,0 +1,128 @@
+{
+  "model": "kimi-k2-0711-preview",
+  "tasks": [
+    {
+      "task": "Bug fix: fix a null pointer in Rust",
+      "tools_needed": [
+        "Read",
+        "Edit",
+        "Bash"
+      ],
+      "tools_pruned": 19,
+      "baseline": {
+        "prompt_tokens": 1882,
+        "completion_tokens": 97,
+        "total_tokens": 1979,
+        "elapsed_sec": 6.76
+      },
+      "optimized": {
+        "prompt_tokens": 664,
+        "completion_tokens": 81,
+        "total_tokens": 745,
+        "elapsed_sec": 5.6
+      },
+      "tokens_saved": 1218,
+      "savings_pct": 64.7
+    },
+    {
+      "task": "Code review: review a PR diff",
+      "tools_needed": [
+        "Read",
+        "Grep"
+      ],
+      "tools_pruned": 20,
+      "baseline": {
+        "prompt_tokens": 1928,
+        "completion_tokens": 500,
+        "total_tokens": 2428,
+        "elapsed_sec": 57.63
+      },
+      "optimized": {
+        "prompt_tokens": 491,
+        "completion_tokens": 112,
+        "total_tokens": 603,
+        "elapsed_sec": 4.25
+      },
+      "tokens_saved": 1437,
+      "savings_pct": 74.5
+    },
+    {
+      "task": "New feature: add CLI argument",
+      "tools_needed": [
+        "Read",
+        "Edit",
+        "Glob",
+        "Bash"
+      ],
+      "tools_pruned": 18,
+      "baseline": {
+        "prompt_tokens": 1887,
+        "completion_tokens": 127,
+        "total_tokens": 2014,
+        "elapsed_sec": 5.82
+      },
+      "optimized": {
+        "prompt_tokens": 755,
+        "completion_tokens": 145,
+        "total_tokens": 900,
+        "elapsed_sec": 5.15
+      },
+      "tokens_saved": 1132,
+      "savings_pct": 60.0
+    },
+    {
+      "task": "Debug: investigate test failure",
+      "tools_needed": [
+        "Read",
+        "Grep",
+        "Bash"
+      ],
+      "tools_pruned": 19,
+      "baseline": {
+        "prompt_tokens": 1903,
+        "completion_tokens": 47,
+        "total_tokens": 1950,
+        "elapsed_sec": 2.45
+      },
+      "optimized": {
+        "prompt_tokens": 636,
+        "completion_tokens": 87,
+        "total_tokens": 723,
+        "elapsed_sec": 3.45
+      },
+      "tokens_saved": 1267,
+      "savings_pct": 66.6
+    },
+    {
+      "task": "Refactor: extract function",
+      "tools_needed": [
+        "Read",
+        "Edit",
+        "Bash"
+      ],
+      "tools_pruned": 19,
+      "baseline": {
+        "prompt_tokens": 1866,
+        "completion_tokens": 55,
+        "total_tokens": 1921,
+        "elapsed_sec": 2.93
+      },
+      "optimized": {
+        "prompt_tokens": 648,
+        "completion_tokens": 117,
+        "total_tokens": 765,
+        "elapsed_sec": 4.61
+      },
+      "tokens_saved": 1218,
+      "savings_pct": 65.3
+    }
+  ],
+  "summary": {
+    "total_baseline": 9466,
+    "total_optimized": 3194,
+    "total_saved": 6272,
+    "savings_pct": 66.3,
+    "avg_saved_per_task": 1254
+  },
+  "methodology": "True A/B test. Same messages, different tool counts. Real API usage data."
+}

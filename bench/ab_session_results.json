@@ -1,0 +1,102 @@
+{
+  "model": "kimi-k2-0711-preview",
+  "scenario": "Fix unwrap() panic in Rust config \u2014 10-turn session",
+  "baseline": {
+    "tools": 22,
+    "turns": [
+      {
+        "turn": 1,
+        "prompt_tokens": 1358,
+        "completion_tokens": 72,
+        "total_tokens": 1430,
+        "cached_tokens": 0,
+        "elapsed": 3.5,
+        "msg_count": 2
+      },
+      {
+        "turn": 2,
+        "prompt_tokens": 1785,
+        "completion_tokens": 167,
+        "total_tokens": 1952,
+        "cached_tokens": 1280,
+        "elapsed": 5.34,
+        "msg_count": 6
+      },
+      {
+        "turn": 3,
+        "prompt_tokens": 2144,
+        "completion_tokens": 163,
+        "total_tokens": 2307,
+        "cached_tokens": 1536,
+        "elapsed": 5.59,
+        "msg_count": 12
+      },
+      {
+        "turn": 4,
+        "prompt_tokens": 2371,
+        "completion_tokens": 97,
+        "total_tokens": 2468,
+        "cached_tokens": 2048,
+        "elapsed": 3.93,
+        "msg_count": 16
+      }
+    ],
+    "total_prompt": 7658
+  },
+  "optimized": {
+    "tools": 4,
+    "tools_used": [
+      "Bash",
+      "Edit",
+      "Grep",
+      "Read"
+    ],
+    "turns": [
+      {
+        "turn": 1,
+        "prompt_tokens": 620,
+        "completion_tokens": 58,
+        "total_tokens": 678,
+        "cached_tokens": 0,
+        "elapsed": 2.9,
+        "msg_count": 2
+      },
+      {
+        "turn": 2,
+        "prompt_tokens": 1047,
+        "completion_tokens": 156,
+        "total_tokens": 1203,
+        "cached_tokens": 512,
+        "elapsed": 5.13,
+        "msg_count": 6
+      },
+      {
+        "turn": 3,
+        "prompt_tokens": 1406,
+        "completion_tokens": 127,
+        "total_tokens": 1533,
+        "cached_tokens": 1024,
+        "elapsed": 4.91,
+        "msg_count": 12
+      },
+      {
+        "turn": 4,
+        "prompt_tokens": 1633,
+        "completion_tokens": 76,
+        "total_tokens": 1709,
+        "cached_tokens": 1280,
+        "elapsed": 3.84,
+        "msg_count": 16
+      }
+    ],
+    "total_prompt": 4706
+  },
+  "summary": {
+    "total_saved": 2952,
+    "savings_pct": 38.5,
+    "avg_saved_per_turn": 738,
+    "cached_baseline": 4864,
+    "cached_optimized": 2816
+  },
+  "methodology": "True A/B test. Full multi-turn session with conversation history. Real API usage."
+}
