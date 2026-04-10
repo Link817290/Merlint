@@ -134,6 +134,7 @@ pub fn parse_session(path: &Path) -> anyhow::Result<TraceSession> {
 // ── Claude Code event structures ──
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CCEvent {
     #[serde(rename = "type")]
     event_type: Option<String>,

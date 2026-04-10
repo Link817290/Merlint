@@ -51,6 +51,12 @@ pub enum OptAction {
     ReduceRetries { pattern: String, suggestion: String },
 }
 
+impl Default for OptimizationPlan {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OptimizationPlan {
     pub fn new() -> Self {
         Self {

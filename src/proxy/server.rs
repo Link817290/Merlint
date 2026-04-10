@@ -177,11 +177,19 @@ async fn handle_request(
                 .unwrap());
         }
     };
-    let latency_ms = start.elapsed().as_millis() as u64;
 
     let status = response.status();
     let resp_headers = response.headers().clone();
+    let is_sse = resp_headers.get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.contains("text/event-stream"))
+        .unwrap_or(false);
+
+    // Buffer the full response for trace recording.
+    // For SSE streams, this collects all chunks then forwards the complete buffer.
+    // The parse_response() function already handles merging SSE chunks for traces.
     let resp_bytes = response.bytes().await.unwrap_or_default();
+    let latency_ms = start.elapsed().as_millis() as u64;
 
     // Record trace if this is a chat completion
     if is_chat && status.is_success() {
@@ -312,6 +320,11 @@ async fn handle_request(
         resp_builder = resp_builder.header(key.as_str(), value);
     }
 
+    // Preserve SSE content-type so the client can parse SSE frames
+    if is_sse {
+        resp_builder = resp_builder.header("content-type", "text/event-stream");
+    }
+
     Ok(resp_builder
         .body(Full::new(resp_bytes))
         .unwrap())
@@ -388,7 +401,7 @@ fn chatresponse_from_value(val: &serde_json::Value) -> Result<ChatResponse, Stri
     let usage = val.get("usage").and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok());
 
     if choices.is_empty() && usage.is_none() {
-        return Err(format!("could not extract choices or usage from response JSON"));
+        return Err("could not extract choices or usage from response JSON".to_string());
     }
 
     Ok(ChatResponse {

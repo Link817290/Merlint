@@ -1,6 +1,8 @@
 pub mod analyzer;
 pub mod banner;
+pub mod config;
 pub mod deep;
+pub mod error;
 pub mod history;
 pub mod models;
 pub mod optimizer;

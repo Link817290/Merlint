@@ -38,7 +38,7 @@ fn build_summary_prompt(
     prompt.push_str("You are merlint, an expert at optimizing LLM agent token usage.\n\n");
     prompt.push_str("Analyze this session data and provide specific, actionable optimization advice.\n\n");
 
-    prompt.push_str(&format!("## Session Summary\n"));
+    prompt.push_str("## Session Summary\n");
     prompt.push_str(&format!("- API Calls: {}\n", ts.num_calls));
     prompt.push_str(&format!("- Total Tokens: {}\n", ts.total_tokens));
     prompt.push_str(&format!("- Prompt Tokens: {}\n", ts.total_prompt_tokens));
@@ -54,28 +54,28 @@ fn build_summary_prompt(
     prompt.push_str(&format!("- Redundant Reads: {}\n", ea.redundant_reads.len()));
 
     if !ts.tool_names_unused.is_empty() {
-        prompt.push_str(&format!("\n## Unused Tools\n"));
+        prompt.push_str("\n## Unused Tools\n");
         for name in &ts.tool_names_unused {
             prompt.push_str(&format!("- {}\n", name));
         }
     }
 
     if !ea.loop_patterns.is_empty() {
-        prompt.push_str(&format!("\n## Loop Patterns Detected\n"));
+        prompt.push_str("\n## Loop Patterns Detected\n");
         for lp in &ea.loop_patterns {
             prompt.push_str(&format!("- {}\n", lp.description));
         }
     }
 
     if !ea.redundant_reads.is_empty() {
-        prompt.push_str(&format!("\n## Redundant Reads\n"));
+        prompt.push_str("\n## Redundant Reads\n");
         for rr in &ea.redundant_reads {
             prompt.push_str(&format!("- {} read {} times\n", rr.resource, rr.read_count));
         }
     }
 
     if !ca.issues.is_empty() {
-        prompt.push_str(&format!("\n## Cache Issues\n"));
+        prompt.push_str("\n## Cache Issues\n");
         for issue in &ca.issues {
             prompt.push_str(&format!("- {}\n", issue.description));
         }
@@ -83,7 +83,7 @@ fn build_summary_prompt(
 
     // Add per-call token growth pattern
     if ts.per_call.len() > 1 {
-        prompt.push_str(&format!("\n## Token Growth Pattern (prompt tokens per call)\n"));
+        prompt.push_str("\n## Token Growth Pattern (prompt tokens per call)\n");
         for ct in &ts.per_call {
             prompt.push_str(&format!("  Call #{}: {} prompt, {} completion\n",
                 ct.call_index, ct.prompt_tokens, ct.completion_tokens));

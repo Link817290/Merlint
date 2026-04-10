@@ -14,7 +14,7 @@ pub fn print_banner() {
     println!("  {}     {}    {} {}", b, "(O  O)".bright_yellow().bold(), "| '_ ` _ \\/ _ | '__| | | '_ | __|".bright_green(), b);
     println!("  {}      {}     {} {}", b, "<>".bright_yellow(), "| | | | | |  _/|  | | | | | | |_".bright_green(), b);
     println!("  {}     {}    {} {}", b, "/|  |\\".white(), "|_| |_| |_|\\___|_| |_|_|_| |_|\\__|".bright_green(), b);
-    println!("  {}    {}                                          {}", b, format!("{}{}",  "*---+".bright_yellow().bold(), "~".bright_magenta().bold()), b);
+    println!("  {}    {}{}                                          {}", b, "*---+".bright_yellow().bold(), "~".bright_magenta().bold(), b);
     println!("  {}                                                    {}", b, b);
     let tag = format!("  Agent Token Optimizer                    v{}", ver);
     println!("  {} {} {}", b, tag.bright_black(), b);

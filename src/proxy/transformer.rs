@@ -5,6 +5,9 @@ use tokio::sync::Mutex;
 
 use crate::models::api::ChatRequest;
 
+/// (msg_index, block_index, content_hash, content_length)
+type FileOccurrence = (usize, Option<usize>, u64, usize);
+
 /// Tracks tool usage across the session and optimizes requests in real-time
 pub struct RequestTransformer {
     /// Tools that have actually been used (called) in this session
@@ -36,6 +39,12 @@ pub struct TransformResult {
     pub tools_pruned: usize,
     pub messages_merged: usize,
     pub estimated_tokens_saved: i64,
+}
+
+impl Default for RequestTransformer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RequestTransformer {
@@ -550,7 +559,7 @@ impl RequestTransformer {
             if !call_id_to_path.is_empty() {
                 // Step 2: Collect tool_result content by file path
                 // path → Vec<(msg_idx, block_idx_or_none, hash, len)>
-                let mut path_occurrences: HashMap<String, Vec<(usize, Option<usize>, u64, usize)>> = HashMap::new();
+                let mut path_occurrences: HashMap<String, Vec<FileOccurrence>> = HashMap::new();
 
                 for (mi, msg) in messages.iter().enumerate() {
                     let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");

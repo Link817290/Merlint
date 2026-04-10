@@ -31,3 +31,4 @@ tracing-subscriber = "0.3"
 anyhow = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 dirs = "5"
+toml = "0.8"

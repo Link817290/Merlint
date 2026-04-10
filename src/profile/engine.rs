@@ -397,8 +397,8 @@ pub fn print_profile(profile: &UserProfile) {
                 0.0
             };
             let bar_len = (pct / 10.0).round() as usize;
-            let bar: String = std::iter::repeat('#').take(bar_len).collect();
-            let pad: String = std::iter::repeat('.').take(10 - bar_len).collect();
+            let bar = "#".repeat(bar_len);
+            let pad = ".".repeat(10 - bar_len);
             println!("    {:>16}  [{}{}] {:>3.0}%  ({} calls)",
                 tf.tool_name, bar.green(), pad.dimmed(), pct, tf.total_calls);
         }
