@@ -84,6 +84,11 @@ async fn handle_request(
         return Ok(handle_status(&store).await);
     }
 
+    // Dashboard endpoint — serves the web UI
+    if path == "/merlint/dashboard" || path == "/merlint/dashboard/" {
+        return Ok(handle_dashboard());
+    }
+
     let body_bytes = req.collect().await?.to_bytes();
 
     let provider = detect_provider(&path, &headers);
@@ -383,6 +388,17 @@ async fn handle_request(
     Ok(resp_builder
         .body(Full::new(resp_bytes))
         .unwrap())
+}
+
+/// Handle the /merlint/dashboard endpoint — serves the web UI with embedded logo.
+fn handle_dashboard() -> Response<Full<Bytes>> {
+    let html = include_str!("dashboard.html");
+    Response::builder()
+        .status(200)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("cache-control", "no-cache")
+        .body(Full::new(Bytes::from(html)))
+        .unwrap()
 }
 
 /// Handle the /merlint/status endpoint — returns session stats as JSON.
