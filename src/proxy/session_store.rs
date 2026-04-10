@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -7,6 +8,21 @@ use tokio::sync::Mutex;
 use crate::models::trace::TraceSession;
 use super::transformer::{new_shared_transformer, SharedTransformer};
 
+/// A recent activity log entry.
+#[derive(Debug, Clone)]
+pub struct ActivityEntry {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub session_key: String,
+    pub path: String,
+    pub method: String,
+    pub status: u16,
+    pub tokens: Option<u64>,
+    pub tokens_saved: Option<i64>,
+    pub latency_ms: u64,
+}
+
+const MAX_ACTIVITY_LOG: usize = 50;
+
 /// Manages multiple concurrent sessions, each with its own trace and transformer.
 pub struct SessionStore {
     sessions: HashMap<String, SessionSlot>,
@@ -14,6 +30,12 @@ pub struct SessionStore {
     optimize: bool,
     /// Shared history data for initializing new transformers
     history_data: Option<(Vec<(String, i64)>, i64)>,
+    /// Total requests received (including non-chat)
+    pub total_requests: u64,
+    /// Recent activity log (ring buffer)
+    pub activity_log: VecDeque<ActivityEntry>,
+    /// Timestamp when the store was created
+    pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
 pub struct SessionSlot {
@@ -27,7 +49,24 @@ impl SessionStore {
             sessions: HashMap::new(),
             optimize,
             history_data: None,
+            total_requests: 0,
+            activity_log: VecDeque::with_capacity(MAX_ACTIVITY_LOG),
+            started_at: chrono::Utc::now(),
         }
+    }
+
+    /// Log a request to the activity ring buffer.
+    pub fn log_activity(&mut self, entry: ActivityEntry) {
+        self.total_requests += 1;
+        if self.activity_log.len() >= MAX_ACTIVITY_LOG {
+            self.activity_log.pop_front();
+        }
+        self.activity_log.push_back(entry);
+    }
+
+    /// Increment the total request counter (for non-chat requests).
+    pub fn inc_requests(&mut self) {
+        self.total_requests += 1;
     }
 
     /// Store tool history so new sessions can be initialized with it.

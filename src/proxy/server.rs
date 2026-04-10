@@ -275,6 +275,22 @@ async fn handle_request(
         }
     }
 
+    // Log activity to the store
+    {
+        let saved = transform_stats.map(|(_, _, s)| s);
+        let mut store_guard = store.lock().await;
+        store_guard.log_activity(super::session_store::ActivityEntry {
+            timestamp: chrono::Utc::now(),
+            session_key: session_key.clone(),
+            path: path.clone(),
+            method: method.to_string(),
+            status: status.as_u16(),
+            tokens: None, // filled below if chat
+            tokens_saved: saved,
+            latency_ms,
+        });
+    }
+
     let mut resp_builder = Response::builder().status(status.as_u16());
     for (key, value) in resp_headers.iter() {
         let key_str = key.as_str().to_lowercase();
@@ -332,10 +348,28 @@ async fn handle_status(store: &SharedSessionStore) -> Response<Full<Bytes>> {
         }));
     }
 
+    // Recent activity log
+    let activity: Vec<serde_json::Value> = s.activity_log.iter().rev().take(20).map(|a| {
+        serde_json::json!({
+            "time": a.timestamp.format("%H:%M:%S").to_string(),
+            "session": if a.session_key.len() > 16 { &a.session_key[..16] } else { &a.session_key },
+            "method": a.method,
+            "path": a.path,
+            "status": a.status,
+            "latency_ms": a.latency_ms,
+            "tokens_saved": a.tokens_saved,
+        })
+    }).collect();
+
+    let uptime_secs = (chrono::Utc::now() - s.started_at).num_seconds();
+
     let body = serde_json::json!({
         "status": "running",
+        "uptime_secs": uptime_secs,
+        "total_requests": s.total_requests,
         "session_count": sessions.len(),
         "sessions": sessions,
+        "activity": activity,
     });
 
     Response::builder()
