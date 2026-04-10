@@ -26,6 +26,14 @@ struct ProxyStatus {
     uptime_secs: i64,
     sessions: Vec<SessionInfo>,
     activity: Vec<ActivityItem>,
+    events: Vec<EventItem>,
+}
+
+#[derive(Debug, Clone)]
+struct EventItem {
+    time: String,
+    kind: String,
+    message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -156,12 +164,26 @@ async fn fetch_status(client: &reqwest::Client, port: u16) -> anyhow::Result<Pro
         })
         .unwrap_or_default();
 
+    let events = body["events"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|e| EventItem {
+                    time: e["time"].as_str().unwrap_or("").to_string(),
+                    kind: e["kind"].as_str().unwrap_or("").to_string(),
+                    message: e["message"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok(ProxyStatus {
         session_count,
         total_requests,
         uptime_secs,
         sessions,
         activity,
+        events,
     })
 }
 
@@ -291,11 +313,14 @@ fn render_offline(f: &mut Frame, area: Rect, port: u16, err: &str) {
 }
 
 fn render_body(f: &mut Frame, area: Rect, status: &ProxyStatus) {
-    // Split: sessions on top, activity log on bottom
     let has_activity = !status.activity.is_empty();
-    let constraints = if has_activity && !status.sessions.is_empty() {
-        vec![Constraint::Percentage(50), Constraint::Percentage(50)]
-    } else if has_activity {
+    let has_events = !status.events.is_empty();
+    let has_sessions = !status.sessions.is_empty();
+
+    // Layout: sessions | activity + events side by side
+    let constraints = if has_sessions && (has_activity || has_events) {
+        vec![Constraint::Percentage(45), Constraint::Percentage(55)]
+    } else if has_activity || has_events {
         vec![Constraint::Length(4), Constraint::Min(0)]
     } else {
         vec![Constraint::Min(0)]
@@ -307,7 +332,7 @@ fn render_body(f: &mut Frame, area: Rect, status: &ProxyStatus) {
         .split(area);
 
     // Sessions area
-    if status.sessions.is_empty() {
+    if !has_sessions {
         let msg = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -330,9 +355,20 @@ fn render_body(f: &mut Frame, area: Rect, status: &ProxyStatus) {
         render_sessions(f, body_chunks[0], status);
     }
 
-    // Activity log
-    if has_activity && body_chunks.len() > 1 {
-        render_activity_log(f, body_chunks[1], status);
+    // Bottom area: activity log + events side by side
+    if body_chunks.len() > 1 {
+        if has_activity && has_events {
+            let bottom = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .split(body_chunks[1]);
+            render_activity_log(f, bottom[0], status);
+            render_event_log(f, bottom[1], status);
+        } else if has_activity {
+            render_activity_log(f, body_chunks[1], status);
+        } else if has_events {
+            render_event_log(f, body_chunks[1], status);
+        }
     }
 }
 
@@ -496,6 +532,35 @@ fn render_activity_log(f: &mut Frame, area: Rect, status: &ProxyStatus) {
             Span::styled(format!("[{}] ", session_short), Style::default().fg(Color::Blue)),
             Span::styled(format!("{} {}", a.method, path_short), Style::default().fg(Color::White)),
             Span::styled(saved_text, Style::default().fg(Color::Green)),
+        ])
+    }).collect();
+
+    let log_widget = Paragraph::new(items);
+    f.render_widget(log_widget, inner);
+}
+
+fn render_event_log(f: &mut Frame, area: Rect, status: &ProxyStatus) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Events ")
+        .title_style(Style::default().fg(Color::Magenta));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let max_lines = inner.height as usize;
+    let items: Vec<Line> = status.events.iter().take(max_lines).map(|e| {
+        let (icon, color) = match e.kind.as_str() {
+            "session" => ("+", Color::Green),
+            "optimize" => ("~", Color::Cyan),
+            _ => ("i", Color::DarkGray),
+        };
+
+        Line::from(vec![
+            Span::styled(format!("  {} ", e.time), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("[{}] ", icon), Style::default().fg(color).bold()),
+            Span::styled(&e.message, Style::default().fg(Color::White)),
         ])
     }).collect();
 

@@ -164,6 +164,15 @@ async fn handle_request(
         let mut store_guard = store.lock().await;
         let _ = store_guard.get_or_create(&session_key);
         let count = store_guard.session_count();
+        let key_short = if session_key.starts_with("sys-") {
+            format!("session:{}", &session_key[4..12.min(session_key.len())])
+        } else {
+            session_key.clone()
+        };
+        store_guard.log_event(
+            super::session_store::EventKind::NewSession,
+            format!("New session: {} (active: {})", key_short, count),
+        );
         drop(store_guard);
         info!("New session detected: [{}] (active sessions: {})", session_key, count);
     }
@@ -276,25 +285,27 @@ async fn handle_request(
             } else {
                 session_key.clone()
             };
+            let req_num = {
+                let s = store.lock().await;
+                s.get_session(&session_key).map(|s| s.entries.len()).unwrap_or(0)
+            };
             if let Some((pruned, merged, saved)) = transform_stats {
                 info!(
                     "[{}] #{} | {} tokens, {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
-                    key_display,
-                    {
-                        let s = store.lock().await;
-                        s.get_session(&session_key).map(|s| s.entries.len()).unwrap_or(0)
-                    },
-                    tokens, latency_ms, pruned, merged, saved
+                    key_display, req_num, tokens, latency_ms, pruned, merged, saved
                 );
+                // Log optimization event
+                {
+                    let mut s = store.lock().await;
+                    s.log_event(
+                        super::session_store::EventKind::Optimization,
+                        format!("[{}] #{}: -{} tools, ~{} tokens saved", key_display, req_num, pruned, saved),
+                    );
+                }
             } else {
                 info!(
                     "[{}] #{} | {} tokens, {}ms",
-                    key_display,
-                    {
-                        let s = store.lock().await;
-                        s.get_session(&session_key).map(|s| s.entries.len()).unwrap_or(0)
-                    },
-                    tokens, latency_ms
+                    key_display, req_num, tokens, latency_ms
                 );
             }
         } else if let Some((pruned, merged, saved)) = transform_stats {
@@ -391,6 +402,20 @@ async fn handle_status(store: &SharedSessionStore) -> Response<Full<Bytes>> {
         })
     }).collect();
 
+    // Event log
+    let events: Vec<serde_json::Value> = s.event_log.iter().rev().take(20).map(|e| {
+        let kind_str = match e.kind {
+            super::session_store::EventKind::NewSession => "session",
+            super::session_store::EventKind::Optimization => "optimize",
+            super::session_store::EventKind::Info => "info",
+        };
+        serde_json::json!({
+            "time": e.timestamp.format("%H:%M:%S").to_string(),
+            "kind": kind_str,
+            "message": e.message,
+        })
+    }).collect();
+
     let uptime_secs = (chrono::Utc::now() - s.started_at).num_seconds();
 
     let body = serde_json::json!({
@@ -400,6 +425,7 @@ async fn handle_status(store: &SharedSessionStore) -> Response<Full<Bytes>> {
         "session_count": sessions.len(),
         "sessions": sessions,
         "activity": activity,
+        "events": events,
     });
 
     Response::builder()

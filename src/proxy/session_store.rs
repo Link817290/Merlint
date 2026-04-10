@@ -22,6 +22,22 @@ pub struct ActivityEntry {
 }
 
 const MAX_ACTIVITY_LOG: usize = 50;
+const MAX_EVENT_LOG: usize = 30;
+
+/// An event log entry (new session, optimization events, etc.)
+#[derive(Debug, Clone)]
+pub struct EventEntry {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub kind: EventKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum EventKind {
+    NewSession,
+    Optimization,
+    Info,
+}
 
 /// Manages multiple concurrent sessions, each with its own trace and transformer.
 pub struct SessionStore {
@@ -34,6 +50,8 @@ pub struct SessionStore {
     pub total_requests: u64,
     /// Recent activity log (ring buffer)
     pub activity_log: VecDeque<ActivityEntry>,
+    /// Event log (ring buffer) for dashboard display
+    pub event_log: VecDeque<EventEntry>,
     /// Timestamp when the store was created
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
@@ -51,6 +69,7 @@ impl SessionStore {
             history_data: None,
             total_requests: 0,
             activity_log: VecDeque::with_capacity(MAX_ACTIVITY_LOG),
+            event_log: VecDeque::with_capacity(MAX_EVENT_LOG),
             started_at: chrono::Utc::now(),
         }
     }
@@ -62,6 +81,18 @@ impl SessionStore {
             self.activity_log.pop_front();
         }
         self.activity_log.push_back(entry);
+    }
+
+    /// Log an event to the event ring buffer.
+    pub fn log_event(&mut self, kind: EventKind, message: String) {
+        if self.event_log.len() >= MAX_EVENT_LOG {
+            self.event_log.pop_front();
+        }
+        self.event_log.push_back(EventEntry {
+            timestamp: chrono::Utc::now(),
+            kind,
+            message,
+        });
     }
 
     /// Increment the total request counter (for non-chat requests).
