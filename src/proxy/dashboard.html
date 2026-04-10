@@ -192,13 +192,14 @@ async function refresh() {
       sc.innerHTML = '<div class="empty">No active sessions<br>Start your agent with ANTHROPIC_BASE_URL pointed here</div>';
     } else {
       sc.innerHTML = d.sessions.map(s => {
-        const key = s.key.length > 24 ? s.key.slice(0,24)+'...' : s.key;
+        const proj = s.project && s.project !== 'unknown' ? s.project : s.key;
+        const projDisplay = proj.length > 36 ? '...'+proj.slice(-33) : proj;
         const badge = s.pruning_suspended
           ? '<span class="badge paused">CACHE</span>'
           : '<span class="badge active">PRUNE</span>';
         const savedVal = s.tokens_saved > 0 ? s.tokens_saved : 0;
         return `<div class="session">
-          <div class="session-header"><span class="session-key">${key}</span>${badge}</div>
+          <div class="session-header"><span class="session-key" title="${proj}">${projDisplay}</span>${badge}</div>
           <div class="session-grid">
             <div class="session-item"><span class="session-item-label">Requests</span><span class="session-item-val">${s.request_count}</span></div>
             <div class="session-item"><span class="session-item-label">Saved</span><span class="session-item-val green">${fmt(savedVal)} tokens</span></div>

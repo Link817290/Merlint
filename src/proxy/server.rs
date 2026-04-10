@@ -29,7 +29,7 @@ use crate::models::api::{
 };
 use crate::models::trace::{Provider, TraceEntry};
 use super::cost::CostCalculator;
-use super::session_store::{extract_session_key, SharedSessionStore};
+use super::session_store::{extract_session_key, extract_project_path, SharedSessionStore};
 use super::spend_log::{BudgetConfig, SharedSpendLog, SpendEntry};
 use super::transformer::is_file_write_tool;
 
@@ -143,6 +143,13 @@ async fn handle_request(
         "default".to_string()
     };
 
+    // Extract project path for display (only on first request)
+    let project_path = if is_chat {
+        extract_project_path(&body_bytes)
+    } else {
+        None
+    };
+
     // Budget enforcement: check spend limits before forwarding
     if is_chat && budget.has_limits() {
         if let Some(ref sl) = spend_log {
@@ -180,7 +187,7 @@ async fn handle_request(
     let (final_body, transform_stats) = if is_chat && config.optimize {
         // Get (or create) the transformer for this session
         let mut store_guard = store.lock().await;
-        let (slot, _) = store_guard.get_or_create(&session_key);
+        let (slot, _) = store_guard.get_or_create_with_project(&session_key, project_path.clone());
         if let Some(ref tx) = slot.transformer {
             let tx = tx.clone();
             drop(store_guard); // release store lock before locking transformer
@@ -229,19 +236,15 @@ async fn handle_request(
     if is_new_session {
         // Ensure session is created in the store even if optimize is off
         let mut store_guard = store.lock().await;
-        let _ = store_guard.get_or_create(&session_key);
+        let _ = store_guard.get_or_create_with_project(&session_key, project_path.clone());
         let count = store_guard.session_count();
-        let key_short = if session_key.starts_with("sys-") {
-            format!("session:{}", &session_key[4..12.min(session_key.len())])
-        } else {
-            session_key.clone()
-        };
+        let project_display = project_path.as_deref().unwrap_or("unknown");
         store_guard.log_event(
             super::session_store::EventKind::NewSession,
-            format!("New session: {} (active: {})", key_short, count),
+            format!("New session: {} ({})", project_display, count),
         );
         drop(store_guard);
-        info!("New session detected: [{}] (active sessions: {})", session_key, count);
+        info!("New session detected: [{}] project={} (active sessions: {})", session_key, project_display, count);
     }
 
     let mut forward_req = client.request(
@@ -464,7 +467,7 @@ async fn handle_status(store: &SharedSessionStore) -> Response<BoxBody> {
     let s = store.lock().await;
     let mut sessions = Vec::new();
 
-    for (key, session, tx_opt) in s.all_slots() {
+    for (key, session, tx_opt, project) in s.all_slots() {
         let total_tokens: u64 = session.entries.iter().filter_map(|e| e.total_tokens()).sum();
         let total_prompt: u64 = session.entries.iter().filter_map(|e| e.prompt_tokens()).sum();
         let total_completion: u64 = session.entries.iter().filter_map(|e| e.completion_tokens()).sum();
@@ -488,6 +491,7 @@ async fn handle_status(store: &SharedSessionStore) -> Response<BoxBody> {
 
         sessions.push(serde_json::json!({
             "key": key,
+            "project": project.unwrap_or("unknown"),
             "id": session.id,
             "started_at": session.started_at.to_rfc3339(),
             "last_activity": last_activity,

@@ -66,6 +66,8 @@ pub struct SessionStore {
 pub struct SessionSlot {
     pub session: TraceSession,
     pub transformer: Option<SharedTransformer>,
+    /// Human-readable project path (e.g. "/workspace/myproject")
+    pub project_path: Option<String>,
 }
 
 impl SessionStore {
@@ -118,6 +120,11 @@ impl SessionStore {
     /// Get or create a session slot for the given session key.
     /// Returns (&mut SessionSlot, bool) — the bool is true if a new session was created.
     pub fn get_or_create(&mut self, key: &str) -> (&mut SessionSlot, bool) {
+        self.get_or_create_with_project(key, None)
+    }
+
+    /// Get or create a session slot, optionally attaching a project path.
+    pub fn get_or_create_with_project(&mut self, key: &str, project_path: Option<String>) -> (&mut SessionSlot, bool) {
         let is_new = !self.sessions.contains_key(key);
         if is_new {
             let mut session = TraceSession::new();
@@ -161,6 +168,7 @@ impl SessionStore {
             self.sessions.insert(key.to_string(), SessionSlot {
                 session,
                 transformer,
+                project_path,
             });
         }
         (self.sessions.get_mut(key).unwrap(), is_new)
@@ -228,10 +236,10 @@ impl SessionStore {
     }
 
     /// Return all sessions with their transformers.
-    pub fn all_slots(&self) -> Vec<(&str, &TraceSession, Option<&SharedTransformer>)> {
+    pub fn all_slots(&self) -> Vec<(&str, &TraceSession, Option<&SharedTransformer>, Option<&str>)> {
         self.sessions
             .iter()
-            .map(|(k, s)| (k.as_str(), &s.session, s.transformer.as_ref()))
+            .map(|(k, s)| (k.as_str(), &s.session, s.transformer.as_ref(), s.project_path.as_deref()))
             .collect()
     }
 
@@ -334,6 +342,23 @@ fn system_prompt_hash(body: &serde_json::Value) -> Option<u64> {
         text[start..end].hash(&mut hasher);
     }
     Some(hasher.finish())
+}
+
+/// Extract the project working directory from the request body, if present.
+pub fn extract_project_path(body: &[u8]) -> Option<String> {
+    let val = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let text = extract_system_text(&val)?;
+    for marker in &["Primary working directory: ", "working directory: ", "Working directory: ", "cwd: "] {
+        if let Some(pos) = text.find(marker) {
+            let start = pos + marker.len();
+            let end = text[start..].find('\n').map(|i| start + i).unwrap_or(text.len().min(start + 200));
+            let path = text[start..end].trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// Extract system prompt text from either Anthropic or OpenAI format.

@@ -78,7 +78,7 @@ pub async fn run(
             let sessions = store_guard.all_slots();
             let session_count = sessions.len();
 
-            for (key, session, tx_opt) in &sessions {
+            for (key, session, tx_opt, _project) in &sessions {
                 // Save trace file per session
                 let file_name = if *key == "default" {
                     output_path.clone()
