@@ -157,6 +157,9 @@ enum Commands {
         port: Option<u16>,
     },
 
+    /// Install shell hook so ANTHROPIC_BASE_URL auto-configures with merlint up/down
+    SetupShell,
+
     /// Live terminal dashboard showing proxy status and session stats
     Dashboard {
         /// Proxy port to connect to
@@ -245,6 +248,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Up { port, foreground } => commands::up::run(port, foreground).await,
 
         Commands::Down { port } => commands::up::run_down(port),
+
+        Commands::SetupShell => commands::up::run_setup_shell(),
 
         Commands::Dashboard { port } => commands::dashboard::run(port).await,
 
