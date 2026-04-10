@@ -141,6 +141,29 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Quick start: launch proxy with defaults (port 8019, Anthropic, optimize)
+    Up {
+        /// Port to listen on
+        #[arg(short, long)]
+        port: Option<u16>,
+        /// Run in foreground instead of background
+        #[arg(long)]
+        foreground: bool,
+    },
+
+    /// Stop the proxy started by 'merlint up'
+    Down {
+        #[arg(short, long)]
+        port: Option<u16>,
+    },
+
+    /// Live terminal dashboard showing proxy status and session stats
+    Dashboard {
+        /// Proxy port to connect to
+        #[arg(short, long)]
+        port: Option<u16>,
+    },
+
     /// Run as background daemon: periodic scan + summarize + update pruning config
     Daemon {
         /// Check interval in seconds
@@ -218,6 +241,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Report { period, count } => commands::report::run(period, count),
 
         Commands::Profile { json, output } => commands::profile::run(json, output),
+
+        Commands::Up { port, foreground } => commands::up::run(port, foreground).await,
+
+        Commands::Down { port } => commands::up::run_down(port),
+
+        Commands::Dashboard { port } => commands::dashboard::run(port).await,
 
         Commands::Daemon {
             interval,

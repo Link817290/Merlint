@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod daemon;
+pub mod dashboard;
 pub mod helpers;
 pub mod monitor;
 pub mod profile;
@@ -7,3 +8,4 @@ pub mod proxy;
 pub mod query;
 pub mod report;
 pub mod scan;
+pub mod up;

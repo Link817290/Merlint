@@ -79,6 +79,11 @@ async fn handle_request(
     let path = req.uri().path().to_string();
     let headers = req.headers().clone();
 
+    // Status endpoint — returns session stats as JSON
+    if path == "/merlint/status" {
+        return Ok(handle_status(&store).await);
+    }
+
     let body_bytes = req.collect().await?.to_bytes();
 
     let provider = detect_provider(&path, &headers);
@@ -286,6 +291,58 @@ async fn handle_request(
     Ok(resp_builder
         .body(Full::new(resp_bytes))
         .unwrap())
+}
+
+/// Handle the /merlint/status endpoint — returns session stats as JSON.
+async fn handle_status(store: &SharedSessionStore) -> Response<Full<Bytes>> {
+    let s = store.lock().await;
+    let mut sessions = Vec::new();
+
+    for (key, session, tx_opt) in s.all_slots() {
+        let total_tokens: u64 = session.entries.iter().filter_map(|e| e.total_tokens()).sum();
+        let total_prompt: u64 = session.entries.iter().filter_map(|e| e.prompt_tokens()).sum();
+        let total_completion: u64 = session.entries.iter().filter_map(|e| e.completion_tokens()).sum();
+        let total_cache_read: u64 = session.entries.iter().filter_map(|e| e.cache_read_tokens()).sum();
+        let total_latency: u64 = session.entries.iter().map(|e| e.latency_ms).sum();
+
+        let mut tokens_saved: i64 = 0;
+        let mut tools_tracked: usize = 0;
+        if let Some(tx) = tx_opt {
+            if let Ok(t) = tx.try_lock() {
+                tokens_saved = t.total_tokens_saved();
+                tools_tracked = t.tool_usage_snapshot().len();
+            }
+        }
+
+        let last_activity = session.entries.last().map(|e| e.timestamp.to_rfc3339());
+
+        sessions.push(serde_json::json!({
+            "key": key,
+            "id": session.id,
+            "started_at": session.started_at.to_rfc3339(),
+            "last_activity": last_activity,
+            "request_count": session.entries.len(),
+            "total_tokens": total_tokens,
+            "prompt_tokens": total_prompt,
+            "completion_tokens": total_completion,
+            "cache_read_tokens": total_cache_read,
+            "total_latency_ms": total_latency,
+            "tokens_saved": tokens_saved,
+            "tools_tracked": tools_tracked,
+        }));
+    }
+
+    let body = serde_json::json!({
+        "status": "running",
+        "session_count": sessions.len(),
+        "sessions": sessions,
+    });
+
+    Response::builder()
+        .status(200)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(serde_json::to_vec(&body).unwrap())))
+        .unwrap()
 }
 
 /// Record tool usage from the API response into the transformer.
