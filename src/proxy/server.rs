@@ -3,8 +3,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use futures_util::StreamExt;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -12,12 +13,24 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
+type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
+
+fn full_body(bytes: Bytes) -> BoxBody {
+    Full::new(bytes).map_err(|_| unreachable!()).boxed()
+}
+
+fn full_body_from_vec(v: Vec<u8>) -> BoxBody {
+    full_body(Bytes::from(v))
+}
+
 use crate::models::api::{
     ChatRequest, ChatResponse, Choice, FunctionCall, FunctionDef, Message, MessageContent, Tool,
     ToolCall, Usage,
 };
 use crate::models::trace::{Provider, TraceEntry};
+use super::cost::CostCalculator;
 use super::session_store::{extract_session_key, SharedSessionStore};
+use super::spend_log::{BudgetConfig, SharedSpendLog, SpendEntry};
 use super::transformer::is_file_write_tool;
 
 pub struct ProxyConfig {
@@ -33,6 +46,7 @@ pub struct ProxyConfig {
 pub async fn run_proxy(
     config: ProxyConfig,
     store: SharedSessionStore,
+    spend_log: Option<SharedSpendLog>,
 ) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", config.listen_port);
     let listener = TcpListener::bind(&addr).await?;
@@ -42,9 +56,19 @@ pub async fn run_proxy(
         info!("real-time optimization ENABLED");
     }
     info!("multi-session tracking ENABLED");
+    if spend_log.is_some() {
+        info!("spend tracking ENABLED (persistent)");
+    }
 
+    let budget = BudgetConfig::from_env();
+    if budget.has_limits() {
+        info!("budget limits: daily=${:.2}, session=${:.2}",
+            budget.daily_limit_usd, budget.session_limit_usd);
+    }
+    let budget = Arc::new(budget);
     let config = Arc::new(config);
     let client = Arc::new(reqwest::Client::new());
+    let cost_calc = Arc::new(CostCalculator::new());
 
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -52,13 +76,22 @@ pub async fn run_proxy(
         let config = config.clone();
         let store = store.clone();
         let client = client.clone();
+        let spend_log = spend_log.clone();
+        let cost_calc = cost_calc.clone();
+        let budget = budget.clone();
 
         tokio::spawn(async move {
             let config = config.clone();
             let store = store.clone();
             let client = client.clone();
+            let spend_log = spend_log.clone();
+            let cost_calc = cost_calc.clone();
+            let budget = budget.clone();
             let service = service_fn(move |req| {
-                handle_request(req, config.clone(), store.clone(), client.clone())
+                handle_request(
+                    req, config.clone(), store.clone(), client.clone(),
+                    spend_log.clone(), cost_calc.clone(), budget.clone(),
+                )
             });
             if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
                 if !e.to_string().contains("connection closed") {
@@ -74,7 +107,10 @@ async fn handle_request(
     config: Arc<ProxyConfig>,
     store: SharedSessionStore,
     client: Arc<reqwest::Client>,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    spend_log: Option<SharedSpendLog>,
+    cost_calc: Arc<CostCalculator>,
+    budget: Arc<BudgetConfig>,
+) -> Result<Response<BoxBody>, hyper::Error> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let headers = req.headers().clone();
@@ -89,6 +125,11 @@ async fn handle_request(
         return Ok(handle_dashboard());
     }
 
+    // Spend stats API endpoint
+    if path == "/merlint/spend" {
+        return Ok(handle_spend_api(&spend_log).await);
+    }
+
     let body_bytes = req.collect().await?.to_bytes();
 
     let provider = detect_provider(&path, &headers);
@@ -101,6 +142,27 @@ async fn handle_request(
     } else {
         "default".to_string()
     };
+
+    // Budget enforcement: check spend limits before forwarding
+    if is_chat && budget.has_limits() {
+        if let Some(ref sl) = spend_log {
+            let log = sl.lock().await;
+            if let Err(msg) = super::spend_log::check_budget(&log, &budget, &session_key) {
+                tracing::warn!("Budget limit hit: {}", msg);
+                let err_body = serde_json::json!({
+                    "error": {
+                        "type": "budget_exceeded",
+                        "message": msg,
+                    }
+                });
+                return Ok(Response::builder()
+                    .status(429)
+                    .header("content-type", "application/json")
+                    .body(full_body_from_vec(serde_json::to_vec(&err_body).unwrap()))
+                    .unwrap());
+            }
+        }
+    }
 
     let target_url = format!("{}{}", config.target_url.trim_end_matches('/'), path);
 
@@ -216,7 +278,7 @@ async fn handle_request(
             return Ok(Response::builder()
                 .status(502)
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(serde_json::to_vec(&err_body).unwrap())))
+                .body(full_body_from_vec(serde_json::to_vec(&err_body).unwrap()))
                 .unwrap());
         }
     };
@@ -228,136 +290,82 @@ async fn handle_request(
         .map(|ct| ct.contains("text/event-stream"))
         .unwrap_or(false);
 
+    // For SSE responses: stream through immediately with background processing
+    if is_sse && is_chat {
+        let mut resp_builder = Response::builder().status(status.as_u16());
+        for (key, value) in resp_headers.iter() {
+            let key_str = key.as_str().to_lowercase();
+            if key_str == "transfer-encoding" || key_str == "content-length" {
+                continue;
+            }
+            resp_builder = resp_builder.header(key.as_str(), value);
+        }
+        resp_builder = resp_builder.header("content-type", "text/event-stream");
+
+        // Create a channel for streaming: we tee each chunk to both client and collector
+        let (tx_stream, rx_stream) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(32);
+        let store_bg = store.clone();
+        let session_key_bg = session_key.clone();
+        let spend_log_bg = spend_log.clone();
+        let cost_calc_bg = cost_calc.clone();
+        let transform_stats_bg = transform_stats;
+        let is_anthropic_bg = is_anthropic_native;
+        let config_bg = config.clone();
+        let body_bytes_bg = body_bytes.clone();
+        let path_bg = path.clone();
+        let provider_bg = provider;
+        let status_code = status.as_u16();
+
+        // Spawn background task: forward reqwest stream chunks to the channel
+        // and collect full response for post-processing
+        let mut byte_stream = response.bytes_stream();
+        tokio::spawn(async move {
+            let mut collected = Vec::new();
+            while let Some(chunk_result) = byte_stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        collected.extend_from_slice(&chunk);
+                        let _ = tx_stream.send(Ok(Frame::data(chunk))).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("SSE stream error: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            let resp_bytes = Bytes::from(collected);
+            let latency_ms = start.elapsed().as_millis() as u64;
+
+            if hyper::StatusCode::from_u16(status_code).map(|s| s.is_success()).unwrap_or(false) {
+                process_chat_response(
+                    &store_bg, &session_key_bg, &resp_bytes, is_anthropic_bg,
+                    &spend_log_bg, &cost_calc_bg, transform_stats_bg, latency_ms,
+                    &config_bg, &body_bytes_bg, &path_bg, provider_bg, status_code,
+                ).await;
+            }
+        });
+
+        // Build streaming response body
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx_stream);
+        let stream_body = StreamBody::new(stream);
+        let boxed_body: BoxBody = http_body_util::BodyExt::boxed(stream_body);
+
+        return Ok(resp_builder.body(boxed_body).unwrap());
+    }
+
     let resp_bytes = response.bytes().await.unwrap_or_default();
     let latency_ms = start.elapsed().as_millis() as u64;
 
-    // Record trace if this is a chat completion
+    // Record trace, tool usage, spend for chat completions
     if is_chat && status.is_success() {
-        // Record tool usage and cache stats from response
-        {
-            let mut store_guard = store.lock().await;
-            let (slot, _) = store_guard.get_or_create(&session_key);
-            if let Some(ref tx) = slot.transformer {
-                let tx = tx.clone();
-                drop(store_guard);
-                record_tool_usage_from_response(
-                    &tx, is_anthropic_native, &resp_bytes,
-                ).await;
-                // After enough requests, contribute this session's tool data
-                // so future sessions benefit from it
-                {
-                    let t = tx.lock().await;
-                    if t.request_count() >= 5 {
-                        let snapshot = t.tool_usage_snapshot();
-                        if !snapshot.is_empty() {
-                            let mut sg = store.lock().await;
-                            sg.contribute_session_tools(&session_key, &snapshot);
-                        }
-                    }
-                }
-                // Feed cache stats back to the transformer for cache-aware optimization
-                if let Ok(resp_val) = serde_json::from_slice::<serde_json::Value>(&resp_bytes) {
-                    let usage = resp_val.get("usage");
-                    let cache_read = usage
-                        .and_then(|u| u.get("cache_read_input_tokens"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let prompt = usage
-                        .and_then(|u| u.get("input_tokens").or(u.get("prompt_tokens")))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    if prompt > 0 {
-                        let mut t = tx.lock().await;
-                        t.record_cache_stats(cache_read, prompt);
-                    }
-                }
-            }
-        }
-
-        // Build trace entry
-        let (chat_req_opt, chat_resp_opt) = if is_anthropic_native {
-            let req = serde_json::from_slice::<serde_json::Value>(&body_bytes)
-                .ok()
-                .and_then(|v| anthropic_request_to_chat_request(&v));
-            let resp = serde_json::from_slice::<serde_json::Value>(&resp_bytes)
-                .ok()
-                .and_then(|v| anthropic_response_to_chat_response(&v));
-            (req, resp)
-        } else {
-            (
-                serde_json::from_slice::<ChatRequest>(&body_bytes).ok(),
-                parse_response(&resp_bytes).ok(),
-            )
-        };
-
-        if let (Some(chat_req), Some(chat_resp)) = (chat_req_opt, chat_resp_opt) {
-            let entry = TraceEntry::new(provider, chat_req, chat_resp, latency_ms);
-            let tokens = entry.total_tokens().unwrap_or(0);
-
-            // Store entry in the session
-            {
-                let mut store_guard = store.lock().await;
-                let (slot, _) = store_guard.get_or_create(&session_key);
-                slot.session.add_entry(entry);
-
-                // Live write to file if configured
-                if let Some(ref dir) = config.live_trace_dir {
-                    let file_name = format!("session-{}.json", sanitize_key(&session_key));
-                    let path = dir.join(file_name);
-                    if let Ok(json) = serde_json::to_string(&slot.session) {
-                        let _ = std::fs::write(&path, &json);
-                    }
-                }
-            }
-
-            // Log with session key and optimization info
-            let key_display = if session_key.starts_with("sys-") {
-                format!("session:{}", &session_key[4..12.min(session_key.len())])
-            } else if session_key.len() > 16 {
-                format!("{}...", &session_key[..16])
-            } else {
-                session_key.clone()
-            };
-            let req_num = {
-                let s = store.lock().await;
-                s.get_session(&session_key).map(|s| s.entries.len()).unwrap_or(0)
-            };
-            if let Some((pruned, merged, saved)) = transform_stats {
-                // Build a concise optimization summary with only non-zero components
-                let mut parts = Vec::new();
-                if pruned > 0 { parts.push(format!("-{} tools", pruned)); }
-                if merged > 0 { parts.push(format!("-{} msgs", merged)); }
-                parts.push(format!("~{} tokens saved", saved));
-                let opt_summary = parts.join(", ");
-
-                info!(
-                    "[{}] #{} | {} tokens, {}ms | optimized: {}",
-                    key_display, req_num, tokens, latency_ms, opt_summary
-                );
-                // Log optimization event
-                {
-                    let mut s = store.lock().await;
-                    s.log_event(
-                        super::session_store::EventKind::Optimization,
-                        format!("[{}] #{}: {}", key_display, req_num, opt_summary),
-                    );
-                }
-            } else {
-                info!(
-                    "[{}] #{} | {} tokens, {}ms",
-                    key_display, req_num, tokens, latency_ms
-                );
-            }
-        } else if let Some((pruned, merged, saved)) = transform_stats {
-            info!(
-                "[{}][proxy] {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
-                session_key, latency_ms, pruned, merged, saved
-            );
-        }
-    }
-
-    // Log activity to the store
-    {
+        process_chat_response(
+            &store, &session_key, &resp_bytes, is_anthropic_native,
+            &spend_log, &cost_calc, transform_stats, latency_ms,
+            &config, &body_bytes, &path, provider, status.as_u16(),
+        ).await;
+    } else {
+        // Log activity for non-chat requests
         let saved = transform_stats.map(|(_, _, s)| s);
         let mut store_guard = store.lock().await;
         store_guard.log_activity(super::session_store::ActivityEntry {
@@ -366,7 +374,7 @@ async fn handle_request(
             path: path.clone(),
             method: method.to_string(),
             status: status.as_u16(),
-            tokens: None, // filled below if chat
+            tokens: None,
             tokens_saved: saved,
             latency_ms,
         });
@@ -386,23 +394,73 @@ async fn handle_request(
     }
 
     Ok(resp_builder
-        .body(Full::new(resp_bytes))
+        .body(full_body(resp_bytes))
         .unwrap())
 }
 
 /// Handle the /merlint/dashboard endpoint — serves the web UI with embedded logo.
-fn handle_dashboard() -> Response<Full<Bytes>> {
+fn handle_dashboard() -> Response<BoxBody> {
     let html = include_str!("dashboard.html");
     Response::builder()
         .status(200)
         .header("content-type", "text/html; charset=utf-8")
         .header("cache-control", "no-cache")
-        .body(Full::new(Bytes::from(html)))
+        .body(full_body(Bytes::from(html)))
+        .unwrap()
+}
+
+/// Handle the /merlint/spend endpoint — returns persistent spend stats as JSON.
+async fn handle_spend_api(spend_log: &Option<SharedSpendLog>) -> Response<BoxBody> {
+    let body = if let Some(ref sl) = spend_log {
+        let log = sl.lock().await;
+        let total = log.total_summary().ok();
+        let today = log.summary_last_days(1).ok();
+        let week = log.summary_last_days(7).ok();
+        let daily = log.daily_breakdown(30).ok();
+        let by_session = log.session_breakdown(30).ok();
+        let by_model = log.model_breakdown(30).ok();
+
+        let fmt_summary = |s: &super::spend_log::SpendSummary| serde_json::json!({
+            "requests": s.request_count,
+            "cost_usd": format!("{:.4}", s.total_cost_usd),
+            "saved_usd": format!("{:.4}", s.total_saved_usd),
+            "tokens": s.total_tokens,
+            "tokens_saved": s.total_tokens_saved,
+        });
+
+        serde_json::json!({
+            "total": total.as_ref().map(fmt_summary),
+            "today": today.as_ref().map(fmt_summary),
+            "week": week.as_ref().map(fmt_summary),
+            "daily": daily.unwrap_or_default().iter().map(|d| serde_json::json!({
+                "date": d.date, "cost_usd": format!("{:.4}", d.cost_usd),
+                "saved_usd": format!("{:.4}", d.saved_usd),
+                "tokens": d.tokens, "tokens_saved": d.tokens_saved, "requests": d.requests,
+            })).collect::<Vec<_>>(),
+            "by_session": by_session.unwrap_or_default().iter().map(|s| serde_json::json!({
+                "session_key": s.session_key, "cost_usd": format!("{:.4}", s.cost_usd),
+                "saved_usd": format!("{:.4}", s.saved_usd),
+                "tokens": s.tokens, "tokens_saved": s.tokens_saved, "requests": s.requests,
+            })).collect::<Vec<_>>(),
+            "by_model": by_model.unwrap_or_default().iter().map(|m| serde_json::json!({
+                "model": m.model, "cost_usd": format!("{:.4}", m.cost_usd),
+                "saved_usd": format!("{:.4}", m.saved_usd),
+                "tokens": m.tokens, "requests": m.requests,
+            })).collect::<Vec<_>>(),
+        })
+    } else {
+        serde_json::json!({"error": "spend tracking not enabled"})
+    };
+
+    Response::builder()
+        .status(200)
+        .header("content-type", "application/json")
+        .body(full_body_from_vec(serde_json::to_vec(&body).unwrap()))
         .unwrap()
 }
 
 /// Handle the /merlint/status endpoint — returns session stats as JSON.
-async fn handle_status(store: &SharedSessionStore) -> Response<Full<Bytes>> {
+async fn handle_status(store: &SharedSessionStore) -> Response<BoxBody> {
     let s = store.lock().await;
     let mut sessions = Vec::new();
 
@@ -488,8 +546,179 @@ async fn handle_status(store: &SharedSessionStore) -> Response<Full<Bytes>> {
     Response::builder()
         .status(200)
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(serde_json::to_vec(&body).unwrap())))
+        .body(full_body_from_vec(serde_json::to_vec(&body).unwrap()))
         .unwrap()
+}
+
+/// Post-process a chat response: record traces, tool usage, cache stats, spend.
+async fn process_chat_response(
+    store: &SharedSessionStore,
+    session_key: &str,
+    resp_bytes: &Bytes,
+    is_anthropic_native: bool,
+    spend_log: &Option<SharedSpendLog>,
+    cost_calc: &Arc<CostCalculator>,
+    transform_stats: Option<(usize, usize, i64)>,
+    latency_ms: u64,
+    config: &Arc<ProxyConfig>,
+    body_bytes: &Bytes,
+    path: &str,
+    provider: Provider,
+    status_code: u16,
+) {
+    // Record tool usage and cache stats
+    {
+        let mut store_guard = store.lock().await;
+        let (slot, _) = store_guard.get_or_create(session_key);
+        if let Some(ref tx) = slot.transformer {
+            let tx = tx.clone();
+            drop(store_guard);
+            record_tool_usage_from_response(&tx, is_anthropic_native, resp_bytes).await;
+            {
+                let t = tx.lock().await;
+                if t.request_count() >= 5 {
+                    let snapshot = t.tool_usage_snapshot();
+                    if !snapshot.is_empty() {
+                        let mut sg = store.lock().await;
+                        sg.contribute_session_tools(session_key, &snapshot);
+                    }
+                }
+            }
+            if let Ok(resp_val) = serde_json::from_slice::<serde_json::Value>(resp_bytes) {
+                let usage = resp_val.get("usage");
+                let cache_read = usage
+                    .and_then(|u| u.get("cache_read_input_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let prompt = usage
+                    .and_then(|u| u.get("input_tokens").or(u.get("prompt_tokens")))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if prompt > 0 {
+                    let mut t = tx.lock().await;
+                    t.record_cache_stats(cache_read, prompt);
+                }
+            }
+        }
+    }
+
+    // Build trace entry
+    let (chat_req_opt, chat_resp_opt) = if is_anthropic_native {
+        let req = serde_json::from_slice::<serde_json::Value>(body_bytes)
+            .ok()
+            .and_then(|v| anthropic_request_to_chat_request(&v));
+        let resp = serde_json::from_slice::<serde_json::Value>(resp_bytes)
+            .ok()
+            .and_then(|v| anthropic_response_to_chat_response(&v));
+        (req, resp)
+    } else {
+        (
+            serde_json::from_slice::<ChatRequest>(body_bytes).ok(),
+            parse_response(resp_bytes).ok(),
+        )
+    };
+
+    if let (Some(chat_req), Some(chat_resp)) = (chat_req_opt, chat_resp_opt) {
+        let entry = TraceEntry::new(provider, chat_req, chat_resp, latency_ms);
+        let tokens = entry.total_tokens().unwrap_or(0);
+
+        {
+            let mut store_guard = store.lock().await;
+            let (slot, _) = store_guard.get_or_create(session_key);
+            slot.session.add_entry(entry);
+
+            if let Some(ref dir) = config.live_trace_dir {
+                let file_name = format!("session-{}.json", sanitize_key(session_key));
+                let path = dir.join(file_name);
+                if let Ok(json) = serde_json::to_string(&slot.session) {
+                    let _ = std::fs::write(&path, &json);
+                }
+            }
+        }
+
+        let key_display = if session_key.starts_with("sys-") {
+            format!("session:{}", &session_key[4..12.min(session_key.len())])
+        } else if session_key.len() > 16 {
+            format!("{}...", &session_key[..16])
+        } else {
+            session_key.to_string()
+        };
+        let req_num = {
+            let s = store.lock().await;
+            s.get_session(session_key).map(|s| s.entries.len()).unwrap_or(0)
+        };
+        if let Some((pruned, merged, saved)) = transform_stats {
+            let mut parts = Vec::new();
+            if pruned > 0 { parts.push(format!("-{} tools", pruned)); }
+            if merged > 0 { parts.push(format!("-{} msgs", merged)); }
+            parts.push(format!("~{} tokens saved", saved));
+            let opt_summary = parts.join(", ");
+            info!("[{}] #{} | {} tokens, {}ms | optimized: {}",
+                key_display, req_num, tokens, latency_ms, opt_summary);
+            {
+                let mut s = store.lock().await;
+                s.log_event(
+                    super::session_store::EventKind::Optimization,
+                    format!("[{}] #{}: {}", key_display, req_num, opt_summary),
+                );
+            }
+        } else {
+            info!("[{}] #{} | {} tokens, {}ms", key_display, req_num, tokens, latency_ms);
+        }
+    } else if let Some((pruned, merged, saved)) = transform_stats {
+        info!("[{}][proxy] {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
+            session_key, latency_ms, pruned, merged, saved);
+    }
+
+    // Spend logging
+    if let Some(ref sl) = spend_log {
+        let tokens_saved = transform_stats.map(|(_, _, s)| s).unwrap_or(0);
+        let (model_name, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok, tools_json) =
+            extract_usage_for_spend(resp_bytes, is_anthropic_native);
+        let cost_result = cost_calc.calculate(
+            &model_name, prompt_tok, completion_tok,
+            cache_read_tok, cache_creation_tok, tokens_saved,
+        );
+        let entry = SpendEntry {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            session_key: session_key.to_string(),
+            model: model_name,
+            prompt_tokens: prompt_tok,
+            completion_tokens: completion_tok,
+            cache_read_tokens: cache_read_tok,
+            cache_creation_tokens: cache_creation_tok,
+            cost_usd: cost_result.cost_usd,
+            cost_saved_usd: cost_result.cost_saved_usd,
+            tokens_saved,
+            latency_ms,
+            tools_called: tools_json,
+            status: status_code,
+        };
+        let sl = sl.clone();
+        tokio::spawn(async move {
+            let log = sl.lock().await;
+            if let Err(e) = log.log(&entry) {
+                tracing::warn!("spend log write failed: {}", e);
+            }
+        });
+    }
+
+    // Log activity
+    {
+        let saved = transform_stats.map(|(_, _, s)| s);
+        let mut store_guard = store.lock().await;
+        store_guard.log_activity(super::session_store::ActivityEntry {
+            timestamp: chrono::Utc::now(),
+            session_key: session_key.to_string(),
+            path: path.to_string(),
+            method: "POST".to_string(),
+            status: status_code,
+            tokens: None,
+            tokens_saved: saved,
+            latency_ms,
+        });
+    }
 }
 
 /// Record tool usage from the API response into the transformer.
@@ -857,6 +1086,135 @@ fn anthropic_request_to_chat_request(val: &serde_json::Value) -> Option<ChatRequ
         tools,
         extra: serde_json::Map::new(),
     })
+}
+
+/// Extract usage metrics from a response for spend logging.
+/// Returns (model, prompt_tokens, completion_tokens, cache_read, cache_creation, tools_json).
+fn extract_usage_for_spend(
+    resp_bytes: &[u8],
+    is_anthropic: bool,
+) -> (String, u64, u64, u64, u64, String) {
+    let val: serde_json::Value = match serde_json::from_slice(resp_bytes) {
+        Ok(v) => v,
+        Err(_) => {
+            // Try parsing as SSE stream: extract data from event lines
+            return extract_usage_from_sse(resp_bytes, is_anthropic);
+        }
+    };
+
+    let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let usage = val.get("usage");
+
+    let (prompt, completion, cache_read, cache_creation) = if is_anthropic {
+        let p = usage.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let c = usage.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let cr = usage.and_then(|u| u.get("cache_read_input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let cc = usage.and_then(|u| u.get("cache_creation_input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+        (p, c, cr, cc)
+    } else {
+        let p = usage.and_then(|u| u.get("prompt_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let c = usage.and_then(|u| u.get("completion_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let cr = usage.and_then(|u| u.get("prompt_tokens_details"))
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        (p, c, cr, 0)
+    };
+
+    // Extract tool names from response
+    let mut tool_names: Vec<String> = Vec::new();
+    if is_anthropic {
+        if let Some(content) = val.get("content").and_then(|v| v.as_array()) {
+            for block in content {
+                if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                    if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                        tool_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+    } else if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
+        for choice in choices {
+            if let Some(tcs) = choice.pointer("/message/tool_calls").and_then(|v| v.as_array()) {
+                for tc in tcs {
+                    if let Some(name) = tc.pointer("/function/name").and_then(|v| v.as_str()) {
+                        tool_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let tools_json = serde_json::to_string(&tool_names).unwrap_or_else(|_| "[]".to_string());
+
+    (model, prompt, completion, cache_read, cache_creation, tools_json)
+}
+
+/// Extract usage from SSE event stream (for spend tracking of streaming responses).
+fn extract_usage_from_sse(
+    resp_bytes: &[u8],
+    _is_anthropic: bool,
+) -> (String, u64, u64, u64, u64, String) {
+    let text = String::from_utf8_lossy(resp_bytes);
+    let mut model = String::new();
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut cache_read: u64 = 0;
+    let mut cache_create: u64 = 0;
+    let mut tool_names: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        let data = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:"));
+        if let Some(data) = data {
+            let data = data.trim();
+            if data == "[DONE]" || data.is_empty() { continue; }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                // message_start contains model and initial usage
+                if v.get("type").and_then(|t| t.as_str()) == Some("message_start") {
+                    if let Some(msg) = v.get("message") {
+                        if let Some(m) = msg.get("model").and_then(|m| m.as_str()) {
+                            model = m.to_string();
+                        }
+                        if let Some(u) = msg.get("usage") {
+                            input_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            cache_read = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            cache_create = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        }
+                    }
+                }
+                // message_delta contains output usage
+                if v.get("type").and_then(|t| t.as_str()) == Some("message_delta") {
+                    if let Some(u) = v.get("usage") {
+                        output_tokens = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(output_tokens);
+                    }
+                }
+                // content_block_start with tool_use
+                if v.get("type").and_then(|t| t.as_str()) == Some("content_block_start") {
+                    if let Some(block) = v.get("content_block") {
+                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                            if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
+                                tool_names.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+                // OpenAI SSE: model in first chunk, usage in last
+                if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+                    if model.is_empty() { model = m.to_string(); }
+                }
+                if let Some(u) = v.get("usage") {
+                    if let Some(p) = u.get("prompt_tokens").and_then(|v| v.as_u64()) {
+                        input_tokens = p;
+                    }
+                    if let Some(c) = u.get("completion_tokens").and_then(|v| v.as_u64()) {
+                        output_tokens = c;
+                    }
+                }
+            }
+        }
+    }
+
+    let tools_json = serde_json::to_string(&tool_names).unwrap_or_else(|_| "[]".to_string());
+    (model, input_tokens, output_tokens, cache_read, cache_create, tools_json)
 }
 
 fn anthropic_response_to_chat_response(val: &serde_json::Value) -> Option<ChatResponse> {

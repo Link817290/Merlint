@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,7 +12,7 @@
   --purple: #a371f7;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono','Noto Sans SC','PingFang SC',monospace; font-size:13px; }
+body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',monospace; font-size:13px; }
 
 /* Header */
 .header { display:flex; align-items:center; gap:16px; padding:20px 24px 16px; border-bottom:1px solid var(--border); }
@@ -102,11 +102,11 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono','No
   <img id="logo" class="logo" alt="merlint" src="data:image/png;base64,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">
   <div>
     <div class="title"><span>merlint</span> dashboard</div>
-    <div class="subtitle">LLM Agent Token Optimizer - 智能 Token 压缩代理</div>
+    <div class="subtitle">LLM Agent Token Optimizer</div>
   </div>
   <div class="status-area">
     <div class="status-line"><span class="pulse"></span><span class="status-label">Running</span></div>
-    <div class="uptime-text">已运行 <span id="uptime">0s</span></div>
+    <div class="uptime-text">Uptime: <span id="uptime">0s</span></div>
   </div>
 </div>
 
@@ -114,52 +114,52 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono','No
 <div class="stats-banner">
   <div class="stat-box">
     <div class="stat-number" id="total-req">0</div>
-    <div class="stat-desc">总请求数<br>经过代理的 API 调用次数</div>
+    <div class="stat-desc">Total Requests<br>API calls through proxy</div>
   </div>
   <div class="stat-box">
     <div class="stat-number purple" id="session-count">0</div>
-    <div class="stat-desc">活跃会话<br>正在监控的 Agent 连接</div>
+    <div class="stat-desc">Active Sessions<br>Agent connections being monitored</div>
   </div>
   <div class="stat-box">
     <div class="stat-number green" id="total-saved">0</div>
-    <div class="stat-desc">已节省 Token<br>通过裁剪/压缩省下的 Token</div>
+    <div class="stat-desc">Tokens Saved<br>Reduced via pruning & compression</div>
   </div>
   <div class="stat-box">
     <div class="stat-number green" id="cost-saved">$0.00</div>
-    <div class="stat-desc">预估节省费用<br>按 $4/M token 估算</div>
+    <div class="stat-desc">Est. Cost Saved<br>Based on $4/M tokens</div>
   </div>
 </div>
 
 <div class="grid">
   <!-- Sessions card -->
   <div class="card">
-    <div class="card-title">会话列表</div>
-    <div class="card-hint">每个 Agent 会话的实时状态。PRUNE = 正在裁剪优化，CACHE = 缓存命中、暂停裁剪。</div>
+    <div class="card-title">Sessions</div>
+    <div class="card-hint">Live status per agent session. PRUNE = actively pruning tools, CACHE = cache hit rate high, pruning paused.</div>
     <div class="sessions-list" id="sessions">
-      <div class="empty">暂无活跃会话<br>启动 Claude Code 并配置 ANTHROPIC_BASE_URL 后会自动出现</div>
+      <div class="empty">No active sessions<br>Start your agent with ANTHROPIC_BASE_URL pointed here</div>
     </div>
   </div>
 
   <!-- Events card -->
   <div class="card">
-    <div class="card-title">事件日志</div>
-    <div class="card-hint">系统事件记录：新会话接入、Token 优化操作等。</div>
+    <div class="card-title">Event Log</div>
+    <div class="card-hint">System events: new sessions, token optimization actions, etc.</div>
     <div class="events-list" id="events">
-      <div class="empty">等待事件...</div>
+      <div class="empty">Waiting for events...</div>
     </div>
   </div>
 
   <!-- Activity card -->
   <div class="card">
-    <div class="card-title">请求记录</div>
-    <div class="card-hint">最近 20 条 API 请求的时间、状态码、延迟和节省情况。</div>
+    <div class="card-title">Request Log</div>
+    <div class="card-hint">Last 20 API requests with status, latency, and tokens saved.</div>
     <div class="activity-list" id="activity">
-      <div class="empty">等待请求...</div>
+      <div class="empty">Waiting for requests...</div>
     </div>
   </div>
 </div>
 
-<div class="refresh-indicator">每 2 秒自动刷新</div>
+<div class="refresh-indicator">Auto-refresh every 2s</div>
 
 <script>
 function fmt(n) {
@@ -168,9 +168,9 @@ function fmt(n) {
   return n.toString();
 }
 function fmtTime(s) {
-  if (s < 60) return s+'秒';
-  if (s < 3600) return Math.floor(s/60)+'分'+s%60+'秒';
-  return Math.floor(s/3600)+'时'+Math.floor((s%3600)/60)+'分';
+  if (s < 60) return s+'s';
+  if (s < 3600) return Math.floor(s/60)+'m '+s%60+'s';
+  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
 }
 
 async function refresh() {
@@ -189,7 +189,7 @@ async function refresh() {
     // Sessions
     const sc = document.getElementById('sessions');
     if (d.sessions.length === 0) {
-      sc.innerHTML = '<div class="empty">暂无活跃会话<br>启动 Claude Code 并配置 ANTHROPIC_BASE_URL 后会自动出现</div>';
+      sc.innerHTML = '<div class="empty">No active sessions<br>Start your agent with ANTHROPIC_BASE_URL pointed here</div>';
     } else {
       sc.innerHTML = d.sessions.map(s => {
         const key = s.key.length > 24 ? s.key.slice(0,24)+'...' : s.key;
@@ -200,12 +200,12 @@ async function refresh() {
         return `<div class="session">
           <div class="session-header"><span class="session-key">${key}</span>${badge}</div>
           <div class="session-grid">
-            <div class="session-item"><span class="session-item-label">请求数</span><span class="session-item-val">${s.request_count}</span></div>
-            <div class="session-item"><span class="session-item-label">已节省</span><span class="session-item-val green">${fmt(savedVal)} tokens</span></div>
-            <div class="session-item"><span class="session-item-label">跟踪工具</span><span class="session-item-val">${s.tools_tracked} 个</span></div>
-            <div class="session-item"><span class="session-item-label">缓存命中</span><span class="session-item-val">${s.api_cache_hit_rate}%</span></div>
-            <div class="session-item"><span class="session-item-label">总 Token</span><span class="session-item-val">${fmt(s.total_tokens)}</span></div>
-            <div class="session-item"><span class="session-item-label">延迟合计</span><span class="session-item-val">${s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms'}</span></div>
+            <div class="session-item"><span class="session-item-label">Requests</span><span class="session-item-val">${s.request_count}</span></div>
+            <div class="session-item"><span class="session-item-label">Saved</span><span class="session-item-val green">${fmt(savedVal)} tokens</span></div>
+            <div class="session-item"><span class="session-item-label">Tools Tracked</span><span class="session-item-val">${s.tools_tracked}</span></div>
+            <div class="session-item"><span class="session-item-label">Cache Hit</span><span class="session-item-val">${s.api_cache_hit_rate}%</span></div>
+            <div class="session-item"><span class="session-item-label">Total Tokens</span><span class="session-item-val">${fmt(s.total_tokens)}</span></div>
+            <div class="session-item"><span class="session-item-label">Total Latency</span><span class="session-item-val">${s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms'}</span></div>
           </div>
         </div>`;
       }).join('');
@@ -214,11 +214,11 @@ async function refresh() {
     // Events
     const ev = document.getElementById('events');
     if (!d.events || d.events.length === 0) {
-      ev.innerHTML = '<div class="empty">等待事件...</div>';
+      ev.innerHTML = '<div class="empty">Waiting for events...</div>';
     } else {
       ev.innerHTML = d.events.map(e => {
         const cls = e.kind === 'optimize' ? 'optimize' : e.kind === 'session' ? 'session' : 'info';
-        const kindLabel = e.kind === 'optimize' ? '优化' : e.kind === 'session' ? '会话' : '信息';
+        const kindLabel = e.kind === 'optimize' ? 'OPT' : e.kind === 'session' ? 'SESSION' : 'INFO';
         return `<div class="event">
           <span class="event-time">${e.time}</span>
           <span class="event-kind ${cls}">${kindLabel}</span>
@@ -230,7 +230,7 @@ async function refresh() {
     // Activity
     const ac = document.getElementById('activity');
     if (!d.activity || d.activity.length === 0) {
-      ac.innerHTML = '<div class="empty">等待请求...</div>';
+      ac.innerHTML = '<div class="empty">Waiting for requests...</div>';
     } else {
       ac.innerHTML = d.activity.map(a => {
         const statusCls = a.status >= 200 && a.status < 400 ? 'ok' : 'err';

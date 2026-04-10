@@ -47,6 +47,18 @@ pub async fn run(
     let trace_dir = output.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&trace_dir)?;
 
+    // Initialize persistent spend log
+    let spend_log = match proxy::spend_log::new_spend_log() {
+        Ok(sl) => {
+            tracing::info!("Spend tracking initialized (~/.merlint/spend.db)");
+            Some(sl)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize spend log: {} (continuing without)", e);
+            None
+        }
+    };
+
     let config = proxy::server::ProxyConfig {
         listen_port: port,
         target_url: target,
@@ -56,7 +68,7 @@ pub async fn run(
     };
 
     tokio::select! {
-        result = proxy::server::run_proxy(config, store.clone()) => {
+        result = proxy::server::run_proxy(config, store.clone(), spend_log) => {
             result?;
         }
         _ = tokio::signal::ctrl_c() => {

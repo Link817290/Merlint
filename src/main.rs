@@ -167,6 +167,19 @@ enum Commands {
         port: Option<u16>,
     },
 
+    /// Show spend tracking: cost, savings, and usage breakdown
+    Spend {
+        /// Number of days to show (default: 7)
+        #[arg(short, long, default_value = "7")]
+        days: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Show waste pattern insights
+        #[arg(long)]
+        insights: bool,
+    },
+
     /// Run as background daemon: periodic scan + summarize + update pruning config
     Daemon {
         /// Check interval in seconds
@@ -252,6 +265,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::SetupShell => commands::up::run_setup_shell(),
 
         Commands::Dashboard { port } => commands::dashboard::run(port).await,
+
+        Commands::Spend { days, json, insights } => commands::spend::run(days, json, insights),
 
         Commands::Daemon {
             interval,

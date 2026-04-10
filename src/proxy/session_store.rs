@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::models::trace::TraceSession;
+use super::spend_log::SpendLog;
 use super::transformer::{new_shared_transformer, SharedTransformer};
 
 /// A recent activity log entry.
@@ -124,11 +125,32 @@ impl SessionStore {
 
             let transformer = if self.optimize {
                 let tx = new_shared_transformer();
-                // Merge DB history + runtime accumulator for best coverage
-                let merged = self.merged_history();
-                if let Some((ref freq, total)) = merged {
-                    if let Ok(mut t) = tx.try_lock() {
-                        t.load_history(freq, total);
+
+                // Try per-project warm-start first (most specific)
+                let mut loaded_project = false;
+                if key.starts_with("sys-") {
+                    if let Ok(db) = SpendLog::open() {
+                        if let Ok(freq) = db.tool_frequency_for_session(key) {
+                            if !freq.is_empty() {
+                                let total = db.session_request_count(key).unwrap_or(0);
+                                if total >= 3 {
+                                    if let Ok(mut t) = tx.try_lock() {
+                                        t.load_history(&freq, total);
+                                        loaded_project = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Fall back to global history if no project-specific data
+                if !loaded_project {
+                    let merged = self.merged_history();
+                    if let Some((ref freq, total)) = merged {
+                        if let Ok(mut t) = tx.try_lock() {
+                            t.load_history(freq, total);
+                        }
                     }
                 }
                 Some(tx)

@@ -180,6 +180,12 @@ impl RequestTransformer {
                             true
                         }
                     });
+                    // Sort for cache prefix stability
+                    request.tools.sort_by(|a, b| {
+                        let na = a.function.as_ref().map(|f| f.name.as_str()).unwrap_or("");
+                        let nb = b.function.as_ref().map(|f| f.name.as_str()).unwrap_or("");
+                        na.cmp(nb)
+                    });
                     tools_pruned = original_count - request.tools.len();
                     estimated_tokens_saved += tools_pruned as i64 * 200;
                 } else {
@@ -196,6 +202,13 @@ impl RequestTransformer {
                     } else {
                         true
                     }
+                });
+
+                // Sort tools alphabetically for cache prefix stability
+                request.tools.sort_by(|a, b| {
+                    let na = a.function.as_ref().map(|f| f.name.as_str()).unwrap_or("");
+                    let nb = b.function.as_ref().map(|f| f.name.as_str()).unwrap_or("");
+                    na.cmp(nb)
                 });
 
                 // Freeze this decision
@@ -533,6 +546,16 @@ impl RequestTransformer {
                                 None => true,
                             }
                         });
+                        // Sort for cache prefix stability
+                        tools_arr.sort_by(|a, b| {
+                            let na = a.get("name").and_then(|v| v.as_str())
+                                .or_else(|| a.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
+                                .unwrap_or("");
+                            let nb = b.get("name").and_then(|v| v.as_str())
+                                .or_else(|| b.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
+                                .unwrap_or("");
+                            na.cmp(nb)
+                        });
                         tools_pruned = original_count - tools_arr.len();
                         estimated_tokens_saved += tools_pruned as i64 * 200;
                     } else {
@@ -548,6 +571,17 @@ impl RequestTransformer {
                             Some(n) => self.tools_used.contains(n) || new_tools.contains(n),
                             None => true,
                         }
+                    });
+
+                    // Sort for cache prefix stability
+                    tools_arr.sort_by(|a, b| {
+                        let na = a.get("name").and_then(|v| v.as_str())
+                            .or_else(|| a.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
+                            .unwrap_or("");
+                        let nb = b.get("name").and_then(|v| v.as_str())
+                            .or_else(|| b.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
+                            .unwrap_or("");
+                        na.cmp(nb)
                     });
 
                     let kept: HashSet<String> = tools_arr.iter()
@@ -1450,6 +1484,35 @@ mod tests {
         assert!(names.contains(&"new_tool".into()));
         assert!(names.contains(&"read".into()));
         assert!(!names.contains(&"delete".into()));
+    }
+
+    #[test]
+    fn test_tool_stable_ordering_after_prune() {
+        let mut tx = RequestTransformer::new();
+        // Tools in reverse alphabetical order
+        let tools = vec![
+            make_tool("write"), make_tool("read"),
+            make_tool("delete"), make_tool("ask"),
+        ];
+        let req = make_request(tools, vec![make_msg("user", "hi")]);
+
+        tx.transform(req.clone()); // #1
+        tx.transform(req.clone()); // #2
+        tx.record_tool_usage(&["read".into(), "write".into()]);
+
+        let r3 = tx.transform(req.clone()); // #3: prune + sort
+        let names: Vec<String> = r3.request.tools.iter()
+            .filter_map(|t| t.function.as_ref().map(|f| f.name.clone()))
+            .collect();
+        // Should be sorted alphabetically
+        assert_eq!(names, vec!["read", "write"]);
+
+        // Subsequent calls should also be sorted
+        let r4 = tx.transform(req.clone());
+        let names4: Vec<String> = r4.request.tools.iter()
+            .filter_map(|t| t.function.as_ref().map(|f| f.name.clone()))
+            .collect();
+        assert_eq!(names4, vec!["read", "write"]);
     }
 
     #[test]

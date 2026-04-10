@@ -149,7 +149,7 @@ async fn test_proxy_forwards_request_and_records_trace() {
     };
 
     let proxy_handle = tokio::spawn(async move {
-        let _ = run_proxy(config, store_clone).await;
+        let _ = run_proxy(config, store_clone, None).await;
     });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -197,7 +197,7 @@ async fn test_proxy_with_optimization_prunes_tools() {
 
     let store_clone = store.clone();
     let proxy_handle = tokio::spawn(async move {
-        let _ = run_proxy(config, store_clone).await;
+        let _ = run_proxy(config, store_clone, None).await;
     });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -252,7 +252,7 @@ async fn test_proxy_anthropic_format_detection() {
     };
 
     let proxy_handle = tokio::spawn(async move {
-        let _ = run_proxy(config, store_clone).await;
+        let _ = run_proxy(config, store_clone, None).await;
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -344,7 +344,7 @@ async fn test_proxy_sse_response_handling() {
     };
 
     let proxy_handle = tokio::spawn(async move {
-        let _ = run_proxy(config, store_clone).await;
+        let _ = run_proxy(config, store_clone, None).await;
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -397,7 +397,7 @@ async fn test_proxy_multi_session_tracking() {
     };
 
     let proxy_handle = tokio::spawn(async move {
-        let _ = run_proxy(config, store_clone).await;
+        let _ = run_proxy(config, store_clone, None).await;
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 

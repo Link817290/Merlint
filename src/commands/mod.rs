@@ -8,4 +8,5 @@ pub mod proxy;
 pub mod query;
 pub mod report;
 pub mod scan;
+pub mod spend;
 pub mod up;
