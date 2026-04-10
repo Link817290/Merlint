@@ -101,10 +101,19 @@ async fn handle_request(
 
     // Optionally transform the request body
     let is_anthropic_native = provider == Provider::Anthropic;
+
+    // Check if this is a brand new session (before get_or_create)
+    let is_new_session = if is_chat {
+        let s = store.lock().await;
+        s.get_session(&session_key).is_none()
+    } else {
+        false
+    };
+
     let (final_body, transform_stats) = if is_chat && config.optimize {
         // Get (or create) the transformer for this session
         let mut store_guard = store.lock().await;
-        let slot = store_guard.get_or_create(&session_key);
+        let (slot, _) = store_guard.get_or_create(&session_key);
         if let Some(ref tx) = slot.transformer {
             let tx = tx.clone();
             drop(store_guard); // release store lock before locking transformer
@@ -148,6 +157,16 @@ async fn handle_request(
     } else {
         (body_bytes.clone(), None)
     };
+
+    // Log new session detection
+    if is_new_session {
+        // Ensure session is created in the store even if optimize is off
+        let mut store_guard = store.lock().await;
+        let _ = store_guard.get_or_create(&session_key);
+        let count = store_guard.session_count();
+        drop(store_guard);
+        info!("New session detected: [{}] (active sessions: {})", session_key, count);
+    }
 
     let mut forward_req = client.request(
         reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::POST),
@@ -203,7 +222,7 @@ async fn handle_request(
         // Record tool usage from response
         {
             let mut store_guard = store.lock().await;
-            let slot = store_guard.get_or_create(&session_key);
+            let (slot, _) = store_guard.get_or_create(&session_key);
             if let Some(ref tx) = slot.transformer {
                 let tx = tx.clone();
                 drop(store_guard);
@@ -231,13 +250,12 @@ async fn handle_request(
 
         if let (Some(chat_req), Some(chat_resp)) = (chat_req_opt, chat_resp_opt) {
             let entry = TraceEntry::new(provider, chat_req, chat_resp, latency_ms);
-            let entry_id = entry.id.clone();
             let tokens = entry.total_tokens().unwrap_or(0);
 
             // Store entry in the session
             {
                 let mut store_guard = store.lock().await;
-                let slot = store_guard.get_or_create(&session_key);
+                let (slot, _) = store_guard.get_or_create(&session_key);
                 slot.session.add_entry(entry);
 
                 // Live write to file if configured
@@ -251,20 +269,32 @@ async fn handle_request(
             }
 
             // Log with session key and optimization info
-            let key_short = if session_key.len() > 12 {
-                &session_key[..12]
+            let key_display = if session_key.starts_with("sys-") {
+                format!("session:{}", &session_key[4..12.min(session_key.len())])
+            } else if session_key.len() > 16 {
+                format!("{}...", &session_key[..16])
             } else {
-                &session_key
+                session_key.clone()
             };
             if let Some((pruned, merged, saved)) = transform_stats {
                 info!(
-                    "[{}][trace {}] {} tokens, {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
-                    key_short, &entry_id[..8], tokens, latency_ms, pruned, merged, saved
+                    "[{}] #{} | {} tokens, {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
+                    key_display,
+                    {
+                        let s = store.lock().await;
+                        s.get_session(&session_key).map(|s| s.entries.len()).unwrap_or(0)
+                    },
+                    tokens, latency_ms, pruned, merged, saved
                 );
             } else {
                 info!(
-                    "[{}][trace {}] {} tokens, {}ms",
-                    key_short, &entry_id[..8], tokens, latency_ms
+                    "[{}] #{} | {} tokens, {}ms",
+                    key_display,
+                    {
+                        let s = store.lock().await;
+                        s.get_session(&session_key).map(|s| s.entries.len()).unwrap_or(0)
+                    },
+                    tokens, latency_ms
                 );
             }
         } else if let Some((pruned, merged, saved)) = transform_stats {

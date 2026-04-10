@@ -75,9 +75,10 @@ impl SessionStore {
     }
 
     /// Get or create a session slot for the given session key.
-    /// Returns (TraceSession id ref, transformer ref).
-    pub fn get_or_create(&mut self, key: &str) -> &mut SessionSlot {
-        if !self.sessions.contains_key(key) {
+    /// Returns (&mut SessionSlot, bool) — the bool is true if a new session was created.
+    pub fn get_or_create(&mut self, key: &str) -> (&mut SessionSlot, bool) {
+        let is_new = !self.sessions.contains_key(key);
+        if is_new {
             let mut session = TraceSession::new();
             session.meta_session_key = Some(key.to_string());
 
@@ -99,7 +100,7 @@ impl SessionStore {
                 transformer,
             });
         }
-        self.sessions.get_mut(key).unwrap()
+        (self.sessions.get_mut(key).unwrap(), is_new)
     }
 
     pub fn get_session(&self, key: &str) -> Option<&TraceSession> {

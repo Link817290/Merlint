@@ -13,12 +13,11 @@ pub async fn run(
     daemon: bool,
     optimize: bool,
 ) -> anyhow::Result<()> {
-    if !daemon {
-        tracing_subscriber::fmt()
-            .with_target(false)
-            .with_level(true)
-            .init();
-    }
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_level(true)
+        .with_writer(std::io::stderr)
+        .init();
 
     // Create multi-session store
     let store = proxy::session_store::new_session_store(optimize);
@@ -34,9 +33,7 @@ pub async fn run(
                         .collect();
                     let mut s = store.lock().await;
                     s.set_history(freq_data, total);
-                    if !daemon {
-                        eprintln!("Loaded tool history from {} sessions", total);
-                    }
+                    tracing::info!("Loaded tool history from {} sessions", total);
                 }
             }
         }
