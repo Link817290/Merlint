@@ -17,16 +17,6 @@ struct DashboardState {
     status: Option<ProxyStatus>,
     error: Option<String>,
     port: u16,
-    frame: usize,
-}
-
-#[derive(Clone, Copy)]
-enum BirdPose {
-    Default,
-    Blink,
-    LookRight,
-    WingsUp,
-    Sleep,
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +93,6 @@ async fn run_loop(
         status: None,
         error: None,
         port,
-        frame: 0,
     };
 
     loop {
@@ -117,7 +106,6 @@ async fn run_loop(
             }
         }
 
-        state.frame = state.frame.wrapping_add(1);
         terminal.draw(|f| render(f, &state))?;
 
         if event::poll(Duration::from_secs(1))? {
@@ -209,7 +197,7 @@ fn render(f: &mut Frame, state: &DashboardState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // header with logo
+            Constraint::Length(3),  // header
             Constraint::Min(0),    // body
             Constraint::Length(1), // footer
         ])
@@ -245,21 +233,6 @@ fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
         .title(" merlint dashboard ")
         .title_alignment(Alignment::Center);
 
-    let inner = header.inner(area);
-    f.render_widget(header, area);
-
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(12), Constraint::Min(0)])
-        .split(inner);
-
-    // Animated wizard bird logo
-    let pose = get_bird_pose(state);
-    let logo = render_bird(pose);
-    let logo_widget = Paragraph::new(logo);
-    f.render_widget(logo_widget, cols[0]);
-
-    // Right side: status info
     let (status_text, status_color) = if state.error.is_some() {
         ("● OFFLINE", Color::Red)
     } else {
@@ -269,34 +242,24 @@ fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
     let uptime = state.status.as_ref().map(|s| format_uptime(s.uptime_secs)).unwrap_or_default();
     let total_req = state.status.as_ref().map(|s| s.total_requests).unwrap_or(0);
     let session_count = state.status.as_ref().map(|s| s.session_count).unwrap_or(0);
-    let total_saved: i64 = state.status.as_ref()
-        .map(|s| s.sessions.iter().map(|sess| sess.tokens_saved).sum())
-        .unwrap_or(0);
 
-    let info_lines = vec![
-        Line::from(vec![
-            Span::styled(" merlint", Style::default().fg(Color::Cyan).bold()),
-            Span::styled("  —  LLM Token Optimizer", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled(" :", Style::default().fg(Color::White)),
-            Span::styled(format!("{}", state.port), Style::default().fg(Color::Yellow)),
-            Span::raw("  │  "),
-            Span::styled(status_text, Style::default().fg(status_color).bold()),
-            Span::raw("  │  "),
-            Span::styled(uptime, Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled(format!(" {} sessions", session_count), Style::default().fg(Color::White)),
-            Span::raw("  │  "),
-            Span::styled(format!("{} reqs", total_req), Style::default().fg(Color::White)),
-            Span::raw("  │  "),
-            Span::styled(format!("~{} saved", format_tokens(total_saved.max(0) as u64)), Style::default().fg(Color::Green).bold()),
-        ]),
-    ];
+    let header_line = Line::from(vec![
+        Span::styled("  :", Style::default().fg(Color::White)),
+        Span::styled(format!("{}", state.port), Style::default().fg(Color::Yellow)),
+        Span::raw("  │  "),
+        Span::styled(status_text, Style::default().fg(status_color).bold()),
+        Span::raw("  │  "),
+        Span::styled(format!("{} sessions", session_count), Style::default().fg(Color::White)),
+        Span::raw("  │  "),
+        Span::styled(format!("{} reqs", total_req), Style::default().fg(Color::White)),
+        Span::raw("  │  "),
+        Span::styled(uptime, Style::default().fg(Color::DarkGray)),
+    ]);
 
-    let info_widget = Paragraph::new(info_lines);
-    f.render_widget(info_widget, cols[1]);
+    let header_widget = Paragraph::new(header_line)
+        .block(header)
+        .alignment(Alignment::Center);
+    f.render_widget(header_widget, area);
 }
 
 fn render_offline(f: &mut Frame, area: Rect, port: u16, err: &str) {
@@ -636,104 +599,3 @@ fn make_bar(pct: u16, width: usize) -> String {
     )
 }
 
-/// Pick bird pose based on dashboard state
-fn get_bird_pose(state: &DashboardState) -> BirdPose {
-    // Offline → sleeping
-    if state.error.is_some() {
-        return BirdPose::Sleep;
-    }
-
-    // Recent optimize event → wings up (casting spell!)
-    if let Some(status) = &state.status {
-        let has_recent_optimize = status.events.iter().any(|e| e.kind == "optimize");
-        if has_recent_optimize && state.frame % 4 < 2 {
-            return BirdPose::WingsUp;
-        }
-    }
-
-    // Idle animation cycle: default → default → blink → default → look → default...
-    const IDLE_CYCLE: [BirdPose; 8] = [
-        BirdPose::Default,
-        BirdPose::Default,
-        BirdPose::Default,
-        BirdPose::Blink,
-        BirdPose::Default,
-        BirdPose::Default,
-        BirdPose::LookRight,
-        BirdPose::Default,
-    ];
-    IDLE_CYCLE[state.frame % IDLE_CYCLE.len()]
-}
-
-/// Render wizard mascot — hat-dominant, ▀ slit eyes, no feet
-fn render_bird(pose: BirdPose) -> Vec<Line<'static>> {
-    let purple = Color::Rgb(106, 13, 173);
-    let m = Style::default().fg(purple);
-    let mb = Style::default().fg(purple).bold();
-    let y = Style::default().fg(Color::Yellow).bold();
-    let g = Style::default().fg(Color::DarkGray);
-
-    match pose {
-        BirdPose::Default => vec![
-            Line::from(vec![
-                Span::styled("   ▄", m), Span::styled("▓", y), Span::styled("▄      ", m),
-            ]),
-            Line::from(vec![
-                Span::styled("▟███", mb), Span::styled("▓", y), Span::styled("██▙    ", mb),
-            ]),
-            Line::from(vec![
-                Span::styled("  ▐█", mb), Span::styled("▀", y),
-                Span::styled("█", mb), Span::styled("▀", y), Span::styled("▌    ", mb),
-            ]),
-            Line::from(Span::styled("  ▝▜██▛▘    ", mb)),
-        ],
-        BirdPose::Blink => vec![
-            Line::from(vec![
-                Span::styled("   ▄", m), Span::styled("▓", y), Span::styled("▄      ", m),
-            ]),
-            Line::from(vec![
-                Span::styled("▟███", mb), Span::styled("▓", y), Span::styled("██▙    ", mb),
-            ]),
-            Line::from(Span::styled("  ▐████▌    ", mb)),
-            Line::from(Span::styled("  ▝▜██▛▘    ", mb)),
-        ],
-        BirdPose::LookRight => vec![
-            Line::from(vec![
-                Span::styled("   ▄", m), Span::styled("▓", y), Span::styled("▄      ", m),
-            ]),
-            Line::from(vec![
-                Span::styled("▟███", mb), Span::styled("▓", y), Span::styled("██▙    ", mb),
-            ]),
-            Line::from(vec![
-                Span::styled("  ▐██", mb), Span::styled("▀▀", y), Span::styled("▌    ", mb),
-            ]),
-            Line::from(Span::styled("  ▝▜██▛▘    ", mb)),
-        ],
-        BirdPose::WingsUp => vec![
-            Line::from(vec![
-                Span::styled("   ▄", m), Span::styled("▓", y), Span::styled("▄      ", m),
-            ]),
-            Line::from(vec![
-                Span::styled("▟██", mb), Span::styled("▓▓▓", y), Span::styled("█▙    ", mb),
-            ]),
-            Line::from(vec![
-                Span::styled("  ▐█", mb), Span::styled("▀", y),
-                Span::styled("█", mb), Span::styled("▀", y), Span::styled("▌    ", mb),
-            ]),
-            Line::from(vec![
-                Span::styled(" ▝▜█", mb), Span::styled("▓", y), Span::styled("█▛▘    ", mb),
-            ]),
-        ],
-        BirdPose::Sleep => vec![
-            Line::from(vec![
-                Span::styled("   ▄", m), Span::styled("▓", y),
-                Span::styled("▄   ", m), Span::styled("z  ", g),
-            ]),
-            Line::from(vec![
-                Span::styled("▟███", mb), Span::styled("▓", y), Span::styled("██▙    ", mb),
-            ]),
-            Line::from(Span::styled("  ▐████▌    ", mb)),
-            Line::from(Span::styled("  ▝▜██▛▘    ", mb)),
-        ],
-    }
-}
