@@ -20,21 +20,19 @@ merlint 是一个 LLM Agent 效率优化工具，帮你减少 token 浪费、提
 
 ## 安装
 
-**Windows（PowerShell 一键安装）：**
-
-```powershell
-irm https://raw.githubusercontent.com/Link817290/Merlint/main/install.ps1 | iex
-```
-
-**macOS / Linux（Bash 一键安装）：**
+**macOS / Linux（一键安装 + 自动代理）：**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Link817290/Merlint/main/install.sh | bash
 ```
 
-**直接下载二进制：**
+安装完成后，merlint 代理会在每次打开终端时自动启动，Claude Code 的请求自动经过优化。**无需任何额外配置。**
 
-前往 [Releases](https://github.com/Link817290/Merlint/releases) 页面下载对应平台的可执行文件。
+**Windows（PowerShell 一键安装）：**
+
+```powershell
+irm https://raw.githubusercontent.com/Link817290/Merlint/main/install.ps1 | iex
+```
 
 **从源码安装（需要 Rust）：**
 
@@ -42,16 +40,41 @@ curl -fsSL https://raw.githubusercontent.com/Link817290/Merlint/main/install.sh 
 cargo install --git https://github.com/Link817290/Merlint.git
 ```
 
+**直接下载二进制：**
+
+前往 [Releases](https://github.com/Link817290/Merlint/releases) 页面下载对应平台的可执行文件。
+
+---
+
+## 工作原理
+
+```
+Claude Code (窗口1)  ──┐
+Claude Code (窗口2)  ──┼──→  merlint proxy :8019  ──→  api.anthropic.com
+Claude Code (窗口3)  ──┘
+                              │
+                              ├─ 实时优化请求（裁剪工具、合并消息、去重）
+                              ├─ 按项目自动分离会话
+                              └─ 记录 token 用量 & 生成报告
+```
+
+安装后 merlint 自动设置 `ANTHROPIC_BASE_URL`，所有 Claude Code 请求透明经过代理。每个项目窗口独立追踪，互不干扰。
+
 ---
 
 ## 快速开始
 
+安装完即可使用，代理自动运行。以下命令可随时查看状态：
+
 ```bash
-# 扫描本地 Agent 会话
-merlint scan
+# 查看代理状态
+merlint-status
 
 # 分析最近一次会话
 merlint latest
+
+# 扫描本地所有 Agent 会话
+merlint scan
 
 # 自动优化（生成 CLAUDE.md + 工具白名单）
 merlint optimize
@@ -60,11 +83,34 @@ merlint optimize
 merlint monitor
 ```
 
+控制代理：
+
+```bash
+merlint-stop     # 停止代理
+merlint-start    # 重启代理
+```
+
 ---
 
 ## 功能
 
-### 1. 诊断（Diagnose）
+### 1. 实时代理优化（Proxy）
+
+透明 HTTP 代理，拦截 LLM API 调用并实时优化：
+
+- **工具裁剪** — 自动移除未使用的工具定义，每个节省约 200 token/次
+- **系统消息合并** — 合并重复的 system prompt 片段
+- **文件读取缓存** — 去重连续相同的文件读取结果
+- **多会话追踪** — 自动识别不同 Claude Code 窗口，按项目独立统计
+
+```bash
+# 自定义启动（通常不需要，安装时已自动配置）
+merlint proxy --target https://api.anthropic.com --optimize --port 8019
+```
+
+支持 OpenAI 和 Anthropic 两种 API 格式，自动检测。
+
+### 2. 诊断（Diagnose）
 
 分析 Agent 会话的 token 使用情况，找出浪费点：
 
@@ -77,24 +123,20 @@ merlint monitor
 merlint analyze --source session.jsonl --format claude-code
 ```
 
-### 2. 优化（Optimize）
+### 3. 优化（Optimize）
 
 根据诊断结果自动生成优化方案：
 
-- **裁剪工具** — 移除未使用的工具定义，每个节省约 200 token/次
+- **裁剪工具** — 移除未使用的工具定义
 - **优化 Prompt** — 重构 system prompt 结构，提高缓存命中
 - **生成配置** — 自动生成 `CLAUDE.md` 和 `.merlint-tools.json`
 - **减少冗余** — 识别重复文件读取和无效重试模式
 
 ```bash
-# 自动优化（默认）
 merlint optimize --source session.jsonl
-
-# 仅查看建议，不写入文件
-merlint optimize --source session.jsonl --dry-run
 ```
 
-### 3. 监控（Monitor）
+### 4. 监控（Monitor）
 
 后台持续监控，发现新会话自动分析和优化：
 
@@ -104,20 +146,19 @@ merlint monitor
 
 # 自定义间隔
 merlint monitor --interval 60
-
-# 仅监控不自动优化
-merlint monitor --no-auto-optimize
 ```
 
-### 4. 代理（Proxy）
+---
 
-透明 HTTP 代理，拦截 LLM API 调用实时记录：
+## 多会话追踪
 
-```bash
-merlint proxy --port 8080 --target https://api.openai.com
-```
+merlint 自动识别不同的 Claude Code 窗口/项目：
 
-自动识别 OpenAI 和 Anthropic API，记录每次请求的 token 消耗。
+- 通过 system prompt 哈希区分不同项目
+- 每个项目独立的 token 统计和优化器状态
+- 也支持显式 `X-Merlint-Session` 请求头
+
+无需任何配置，开多个窗口自动分离。
 
 ---
 
@@ -172,6 +213,9 @@ merlint 会自动检测文件格式，通常不需要手动指定 `--format`。
 | `merlint monitor` | 持续监控 + 自动优化 |
 | `merlint query` | 查询特定指标 |
 | `merlint proxy` | 启动透明代理 |
+| `merlint-status` | 查看代理运行状态 |
+| `merlint-start` | 启动代理 |
+| `merlint-stop` | 停止代理 |
 
 ---
 
