@@ -24,6 +24,12 @@ pub struct RequestTransformer {
     file_cache: HashMap<String, (u64, usize)>,
     /// Stats: number of cache hits this session
     pub file_cache_hits: usize,
+    /// Frozen prune set: once we decide which tools to keep, lock it for cache stability
+    frozen_tools: Option<HashSet<String>>,
+    /// Cache hit tracking: (cache_read_tokens, total_prompt_tokens) from recent responses
+    cache_stats: (u64, u64),
+    /// Whether tool pruning is suspended due to high cache hit rate
+    pruning_suspended: bool,
 }
 
 /// Result of transforming a raw JSON request (Anthropic-native format)
@@ -57,6 +63,31 @@ impl RequestTransformer {
             tokens_saved: 0,
             file_cache: HashMap::new(),
             file_cache_hits: 0,
+            frozen_tools: None,
+            cache_stats: (0, 0),
+            pruning_suspended: false,
+        }
+    }
+
+    /// Record cache statistics from an API response to decide whether
+    /// tool pruning is worth the cache invalidation cost.
+    pub fn record_cache_stats(&mut self, cache_read_tokens: u64, prompt_tokens: u64) {
+        self.cache_stats.0 += cache_read_tokens;
+        self.cache_stats.1 += prompt_tokens;
+
+        // If cache hit rate > 50%, suspend tool pruning — the cache savings
+        // outweigh the token savings from removing unused tools.
+        if self.cache_stats.1 > 0 {
+            let hit_rate = self.cache_stats.0 as f64 / self.cache_stats.1 as f64;
+            if hit_rate > 0.5 && self.request_count >= 3 {
+                if !self.pruning_suspended {
+                    self.pruning_suspended = true;
+                    // Clear frozen tools so next request sends full tool set
+                    self.frozen_tools = None;
+                }
+            } else {
+                self.pruning_suspended = false;
+            }
         }
     }
 
@@ -75,38 +106,77 @@ impl RequestTransformer {
         let mut messages_merged = 0;
         let mut estimated_tokens_saved: i64 = 0;
 
-        // === Optimization 1: Prune unused tools ===
-        // After the first few calls, we have a picture of which tools are actually used.
+        // === Optimization 1: Prune unused tools (cache-aware) ===
+        // After the first few calls, we know which tools are actually used.
         // Remove tools that were defined but never called.
-        // Wait until call #3 to start pruning (need enough data to know usage patterns).
-        if self.request_count >= 3 && !self.tools_used.is_empty() {
+        //
+        // Cache protection:
+        // - Once we decide which tools to keep, freeze that decision so the
+        //   tools array stays stable → Anthropic's prompt cache stays valid.
+        // - If the API response shows high cache hit rate (>50%), suspend
+        //   pruning entirely — cache savings > token savings.
+        // - Frozen prune set is cleared if a NEW tool appears (agent added
+        //   a tool we haven't seen before).
+        if self.pruning_suspended {
+            // Cache is working well — don't touch tools at all
+            for tool in &request.tools {
+                if let Some(ref f) = tool.function {
+                    self.tools_seen.insert(f.name.clone());
+                }
+            }
+        } else if self.request_count >= 3 && !self.tools_used.is_empty() {
             let original_count = request.tools.len();
 
-            // Collect current tool names BEFORE updating tools_seen
             let current_names: HashSet<String> = request.tools.iter()
                 .filter_map(|t| t.function.as_ref().map(|f| f.name.clone()))
                 .collect();
 
-            // Find tools new to this request (not seen in previous calls)
+            // Check if any new tools appeared that we haven't seen before
             let new_tools: HashSet<String> = current_names.difference(&self.tools_seen).cloned().collect();
+            let has_new_tools = !new_tools.is_empty();
 
-            // Now update seen set
+            // Update seen set
             for name in &current_names {
                 self.tools_seen.insert(name.clone());
             }
 
-            request.tools.retain(|tool| {
-                if let Some(ref f) = tool.function {
-                    // Keep if: used before, or brand new (not seen in previous calls)
-                    self.tools_used.contains(&f.name) || new_tools.contains(&f.name)
+            // If we have a frozen tool set AND no new tools appeared, reuse it
+            if let Some(ref frozen) = self.frozen_tools {
+                if !has_new_tools {
+                    request.tools.retain(|tool| {
+                        if let Some(ref f) = tool.function {
+                            frozen.contains(&f.name)
+                        } else {
+                            true
+                        }
+                    });
+                    tools_pruned = original_count - request.tools.len();
+                    estimated_tokens_saved += tools_pruned as i64 * 200;
                 } else {
-                    true // keep tools without function def (edge case)
+                    // New tools appeared — recompute and re-freeze
+                    self.frozen_tools = None;
                 }
-            });
+            }
 
-            tools_pruned = original_count - request.tools.len();
-            // ~200 tokens per tool definition
-            estimated_tokens_saved += tools_pruned as i64 * 200;
+            // No frozen set yet (first prune, or invalidated by new tools) — compute it
+            if self.frozen_tools.is_none() {
+                request.tools.retain(|tool| {
+                    if let Some(ref f) = tool.function {
+                        self.tools_used.contains(&f.name) || new_tools.contains(&f.name)
+                    } else {
+                        true
+                    }
+                });
+
+                // Freeze this decision
+                let kept: HashSet<String> = request.tools.iter()
+                    .filter_map(|t| t.function.as_ref().map(|f| f.name.clone()))
+                    .collect();
+                self.frozen_tools = Some(kept);
+
+                tools_pruned = original_count - request.tools.len();
+                estimated_tokens_saved += tools_pruned as i64 * 200;
+            }
         } else {
             // Just record tool names for future pruning
             for tool in &request.tools {
@@ -388,47 +458,82 @@ impl RequestTransformer {
         let mut messages_optimized = 0usize;
         let mut tools_pruned = 0usize;
 
-        // === Optimization 0: Prune unused tools (raw JSON) ===
-        // Works the same as typed tool pruning, but operates on raw JSON.
-        // Anthropic tools have "name" at the top level.
-        if self.request_count >= 3 && !self.tools_used.is_empty() {
+        // === Optimization 0: Prune unused tools (raw JSON, cache-aware) ===
+        // Same cache protection as typed transform:
+        // - Freeze prune decisions for cache stability
+        // - Suspend pruning when cache hit rate > 50%
+        if self.pruning_suspended {
+            // Cache is working well — don't touch tools
+            if let Some(tools_arr) = body.get("tools").and_then(|v| v.as_array()) {
+                for t in tools_arr {
+                    if let Some(name) = t.get("name").and_then(|v| v.as_str())
+                        .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
+                    {
+                        self.tools_seen.insert(name.to_string());
+                    }
+                }
+            }
+        } else if self.request_count >= 3 && !self.tools_used.is_empty() {
             if let Some(tools_arr) = body.get_mut("tools").and_then(|v| v.as_array_mut()) {
                 let original_count = tools_arr.len();
 
-                // Collect all tool names in this request
                 let current_names: HashSet<String> = tools_arr.iter()
                     .filter_map(|t| {
-                        // Try top-level "name" (Anthropic) then "function.name" (OpenAI)
                         t.get("name").and_then(|v| v.as_str())
                             .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
                             .map(String::from)
                     })
                     .collect();
 
-                // Find tools new to this request (not seen in previous calls)
                 let new_tools: HashSet<String> = current_names.difference(&self.tools_seen).cloned().collect();
+                let has_new_tools = !new_tools.is_empty();
 
-                // Update seen set
                 for name in &current_names {
                     self.tools_seen.insert(name.clone());
                 }
 
-                // Retain only used tools and new tools
-                tools_arr.retain(|t| {
-                    let name = t.get("name").and_then(|v| v.as_str())
-                        .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()));
-                    match name {
-                        Some(n) => self.tools_used.contains(n) || new_tools.contains(n),
-                        None => true, // Keep tools without a name
+                // Use frozen set if available and no new tools
+                if let Some(ref frozen) = self.frozen_tools {
+                    if !has_new_tools {
+                        tools_arr.retain(|t| {
+                            let name = t.get("name").and_then(|v| v.as_str())
+                                .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()));
+                            match name {
+                                Some(n) => frozen.contains(n),
+                                None => true,
+                            }
+                        });
+                        tools_pruned = original_count - tools_arr.len();
+                        estimated_tokens_saved += tools_pruned as i64 * 200;
+                    } else {
+                        self.frozen_tools = None;
                     }
-                });
+                }
 
-                tools_pruned = original_count - tools_arr.len();
-                // Estimate ~200 tokens per pruned tool (conservative)
-                estimated_tokens_saved += tools_pruned as i64 * 200;
+                if self.frozen_tools.is_none() {
+                    tools_arr.retain(|t| {
+                        let name = t.get("name").and_then(|v| v.as_str())
+                            .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()));
+                        match name {
+                            Some(n) => self.tools_used.contains(n) || new_tools.contains(n),
+                            None => true,
+                        }
+                    });
+
+                    let kept: HashSet<String> = tools_arr.iter()
+                        .filter_map(|t| {
+                            t.get("name").and_then(|v| v.as_str())
+                                .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
+                                .map(String::from)
+                        })
+                        .collect();
+                    self.frozen_tools = Some(kept);
+
+                    tools_pruned = original_count - tools_arr.len();
+                    estimated_tokens_saved += tools_pruned as i64 * 200;
+                }
             }
         } else {
-            // Just record tool names for future pruning
             if let Some(tools_arr) = body.get("tools").and_then(|v| v.as_array()) {
                 for t in tools_arr {
                     if let Some(name) = t.get("name").and_then(|v| v.as_str())

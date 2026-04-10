@@ -228,7 +228,7 @@ async fn handle_request(
 
     // Record trace if this is a chat completion
     if is_chat && status.is_success() {
-        // Record tool usage from response
+        // Record tool usage and cache stats from response
         {
             let mut store_guard = store.lock().await;
             let (slot, _) = store_guard.get_or_create(&session_key);
@@ -238,6 +238,22 @@ async fn handle_request(
                 record_tool_usage_from_response(
                     &tx, is_anthropic_native, &resp_bytes,
                 ).await;
+                // Feed cache stats back to the transformer for cache-aware optimization
+                if let Ok(resp_val) = serde_json::from_slice::<serde_json::Value>(&resp_bytes) {
+                    let usage = resp_val.get("usage");
+                    let cache_read = usage
+                        .and_then(|u| u.get("cache_read_input_tokens"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let prompt = usage
+                        .and_then(|u| u.get("input_tokens").or(u.get("prompt_tokens")))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if prompt > 0 {
+                        let mut t = tx.lock().await;
+                        t.record_cache_stats(cache_read, prompt);
+                    }
+                }
             }
         }
 
