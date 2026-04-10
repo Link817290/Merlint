@@ -238,6 +238,18 @@ async fn handle_request(
                 record_tool_usage_from_response(
                     &tx, is_anthropic_native, &resp_bytes,
                 ).await;
+                // After enough requests, contribute this session's tool data
+                // so future sessions benefit from it
+                {
+                    let t = tx.lock().await;
+                    if t.request_count() >= 5 {
+                        let snapshot = t.tool_usage_snapshot();
+                        if !snapshot.is_empty() {
+                            let mut sg = store.lock().await;
+                            sg.contribute_session_tools(&session_key, &snapshot);
+                        }
+                    }
+                }
                 // Feed cache stats back to the transformer for cache-aware optimization
                 if let Ok(resp_val) = serde_json::from_slice::<serde_json::Value>(&resp_bytes) {
                     let usage = resp_val.get("usage");
@@ -306,16 +318,23 @@ async fn handle_request(
                 s.get_session(&session_key).map(|s| s.entries.len()).unwrap_or(0)
             };
             if let Some((pruned, merged, saved)) = transform_stats {
+                // Build a concise optimization summary with only non-zero components
+                let mut parts = Vec::new();
+                if pruned > 0 { parts.push(format!("-{} tools", pruned)); }
+                if merged > 0 { parts.push(format!("-{} msgs", merged)); }
+                parts.push(format!("~{} tokens saved", saved));
+                let opt_summary = parts.join(", ");
+
                 info!(
-                    "[{}] #{} | {} tokens, {}ms | optimized: -{} tools, -{} msgs, ~{} tokens saved",
-                    key_display, req_num, tokens, latency_ms, pruned, merged, saved
+                    "[{}] #{} | {} tokens, {}ms | optimized: {}",
+                    key_display, req_num, tokens, latency_ms, opt_summary
                 );
                 // Log optimization event
                 {
                     let mut s = store.lock().await;
                     s.log_event(
                         super::session_store::EventKind::Optimization,
-                        format!("[{}] #{}: -{} tools, ~{} tokens saved", key_display, req_num, pruned, saved),
+                        format!("[{}] #{}: {}", key_display, req_num, opt_summary),
                     );
                 }
             } else {

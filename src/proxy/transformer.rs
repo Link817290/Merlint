@@ -491,7 +491,7 @@ impl RequestTransformer {
         // === Optimization 0: Prune unused tools (raw JSON, cache-aware) ===
         // Same cache protection as typed transform:
         // - Freeze prune decisions for cache stability
-        // - Suspend pruning when cache hit rate > 50%
+        // - Suspend pruning when cache hit rate > 30%
         if self.pruning_suspended {
             // Cache is working well — don't touch tools
             if let Some(tools_arr) = body.get("tools").and_then(|v| v.as_array()) {
@@ -616,7 +616,7 @@ impl RequestTransformer {
                             }
                         }
                     }
-                } else {
+                } else if role != "tool" {
                     prev_content_hash = None;
                 }
 
@@ -801,6 +801,9 @@ impl RequestTransformer {
             if ratio >= 0.2 {
                 self.tools_used.insert(name.clone());
             }
+            // All history tools are "seen" — prevents them from being treated
+            // as "new tools" on request #1, which would bypass pruning entirely.
+            self.tools_seen.insert(name.clone());
         }
         // If we loaded history, allow pruning from request #1 instead of #3
         if !self.tools_used.is_empty() {
@@ -1304,5 +1307,173 @@ mod tests {
 
         assert!(tx.total_tokens_saved() > 0);
         assert_eq!(tx.request_count(), 3);
+    }
+
+    #[test]
+    fn test_history_pruning_actually_prunes() {
+        // Regression: load_history used to leave tools_seen empty,
+        // causing ALL tools to be treated as "new" on request #1,
+        // which bypassed pruning entirely.
+        let mut tx = RequestTransformer::new();
+
+        // Simulate history: "read" and "write" were used in >20% of sessions
+        let history = vec![
+            ("read".to_string(), 8),
+            ("write".to_string(), 6),
+            ("delete".to_string(), 1),  // low frequency, should be pruned
+            ("list".to_string(), 1),    // low frequency, should be pruned
+        ];
+        tx.load_history(&history, 10);
+
+        // tools_used should have "read" and "write" (>20%)
+        assert!(tx.tools_used.contains("read"));
+        assert!(tx.tools_used.contains("write"));
+        assert!(!tx.tools_used.contains("delete"));
+
+        // tools_seen should have ALL history tools (prevents "new tool" bypass)
+        assert!(tx.tools_seen.contains("read"));
+        assert!(tx.tools_seen.contains("delete"));
+        assert!(tx.tools_seen.contains("list"));
+
+        // First request (request_count goes to 3 → pruning enabled)
+        let req = make_request(
+            vec![make_tool("read"), make_tool("write"), make_tool("delete"), make_tool("list")],
+            vec![make_msg("user", "hello")],
+        );
+        let result = tx.transform(req);
+
+        // Should prune "delete" and "list" (not in tools_used, not "new")
+        assert_eq!(result.tools_pruned, 2, "History-based pruning should remove 2 tools");
+        assert_eq!(result.request.tools.len(), 2);
+        let names: Vec<String> = result.request.tools.iter()
+            .filter_map(|t| t.function.as_ref().map(|f| f.name.clone()))
+            .collect();
+        assert!(names.contains(&"read".into()));
+        assert!(names.contains(&"write".into()));
+    }
+
+    #[test]
+    fn test_history_pruning_preserves_truly_new_tools() {
+        // When a tool appears that wasn't in history at all, it should be kept.
+        // Tools that ARE in history but below the 20% threshold should be pruned.
+        let mut tx = RequestTransformer::new();
+        tx.load_history(&[
+            ("read".to_string(), 8),
+            ("write".to_string(), 6),
+            ("delete".to_string(), 1),  // in history, low freq → tools_seen but NOT tools_used
+        ], 10);
+
+        // Request includes "brand_new_tool" which is NOT in history at all
+        let req = make_request(
+            vec![
+                make_tool("read"), make_tool("write"),
+                make_tool("delete"),        // in history but low freq
+                make_tool("brand_new_tool"), // never seen in history
+            ],
+            vec![make_msg("user", "hello")],
+        );
+        let result = tx.transform(req);
+
+        // "brand_new_tool" is truly new (not in tools_seen) → should be kept
+        // "delete" is in history (in tools_seen) but low freq (not in tools_used) → should be pruned
+        let names: Vec<String> = result.request.tools.iter()
+            .filter_map(|t| t.function.as_ref().map(|f| f.name.clone()))
+            .collect();
+        assert!(names.contains(&"read".into()));
+        assert!(names.contains(&"write".into()));
+        assert!(names.contains(&"brand_new_tool".into()), "Truly new tools should be preserved");
+        assert!(!names.contains(&"delete".into()), "Low-freq history tools should be pruned");
+    }
+
+    #[test]
+    fn test_cache_aware_pruning_suspension() {
+        let mut tx = RequestTransformer::new();
+        let tools = vec![make_tool("read"), make_tool("write"), make_tool("unused")];
+        let req = make_request(tools.clone(), vec![make_msg("user", "hi")]);
+
+        // Build up to request #3
+        tx.transform(req.clone());
+        tx.transform(req.clone());
+        tx.record_tool_usage(&["read".into(), "write".into()]);
+
+        // Simulate warm cache: 40% hit rate (> 30% threshold)
+        tx.record_cache_stats(4000, 10000);
+        assert!(tx.is_pruning_suspended());
+
+        // Request #3 with pruning suspended → no pruning
+        let r3 = tx.transform(req.clone());
+        assert_eq!(r3.tools_pruned, 0, "Pruning should be suspended when cache is warm");
+        assert_eq!(r3.request.tools.len(), 3);
+
+        // Cache cools down: hit rate drops to 5% (< 10% resume threshold)
+        // Reset stats to simulate cooled cache
+        tx.cache_stats = (0, 0);
+        tx.record_cache_stats(500, 10000);
+        assert!(!tx.is_pruning_suspended(), "Pruning should resume when cache is cold");
+
+        // Next request should prune
+        let r4 = tx.transform(req.clone());
+        assert_eq!(r4.tools_pruned, 1, "Pruning should resume after cache cools");
+    }
+
+    #[test]
+    fn test_frozen_tools_stability() {
+        // Once frozen, same prune decision should be reused
+        let mut tx = RequestTransformer::new();
+        let tools = vec![
+            make_tool("read"), make_tool("write"),
+            make_tool("delete"), make_tool("list"),
+        ];
+        let req = make_request(tools.clone(), vec![make_msg("user", "hi")]);
+
+        tx.transform(req.clone()); // #1
+        tx.transform(req.clone()); // #2
+        tx.record_tool_usage(&["read".into(), "write".into()]);
+
+        let r3 = tx.transform(req.clone()); // #3: first prune, freezes
+        assert_eq!(r3.tools_pruned, 2);
+
+        let r4 = tx.transform(req.clone()); // #4: uses frozen set
+        assert_eq!(r4.tools_pruned, 2);
+        assert_eq!(r4.request.tools.len(), 2);
+
+        // New tool appears → invalidate frozen set
+        let mut tools_plus = tools.clone();
+        tools_plus.push(make_tool("new_tool"));
+        let req_new = make_request(tools_plus, vec![make_msg("user", "hi")]);
+        let r5 = tx.transform(req_new);
+
+        // new_tool kept (it's new), read/write kept (used), delete/list pruned
+        let names: Vec<String> = r5.request.tools.iter()
+            .filter_map(|t| t.function.as_ref().map(|f| f.name.clone()))
+            .collect();
+        assert!(names.contains(&"new_tool".into()));
+        assert!(names.contains(&"read".into()));
+        assert!(!names.contains(&"delete".into()));
+    }
+
+    #[test]
+    fn test_raw_transform_tool_dedup() {
+        // Regression: OpenAI-style "tool" role dedup in transform_raw
+        // used to always clear prev_content_hash before checking it
+        let mut tx = RequestTransformer::new();
+        let long_content = "x".repeat(1000);
+        let mut body = serde_json::json!({
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "do stuff"},
+                {"role": "tool", "content": long_content, "tool_call_id": "c1"},
+                {"role": "tool", "content": long_content, "tool_call_id": "c2"},
+            ]
+        });
+
+        let result = tx.transform_raw(&mut body);
+        let msgs = body["messages"].as_array().unwrap();
+        let second_tool = msgs[2]["content"].as_str().unwrap();
+        assert_eq!(
+            second_tool, "[same content as previous tool result]",
+            "Consecutive identical tool messages should be deduped in raw transform"
+        );
+        assert!(result.estimated_tokens_saved > 0);
     }
 }

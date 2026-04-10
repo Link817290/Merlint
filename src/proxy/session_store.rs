@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -46,6 +45,13 @@ pub struct SessionStore {
     optimize: bool,
     /// Shared history data for initializing new transformers
     history_data: Option<(Vec<(String, i64)>, i64)>,
+    /// Running tool usage accumulator from current proxy run.
+    /// Merged with history_data when creating new sessions.
+    runtime_tool_counts: HashMap<String, i64>,
+    /// Number of sessions completed during this proxy run
+    runtime_session_count: i64,
+    /// Sessions that have already contributed to runtime accumulator
+    contributed_sessions: HashSet<String>,
     /// Total requests received (including non-chat)
     pub total_requests: u64,
     /// Recent activity log (ring buffer)
@@ -67,6 +73,9 @@ impl SessionStore {
             sessions: HashMap::new(),
             optimize,
             history_data: None,
+            runtime_tool_counts: HashMap::new(),
+            runtime_session_count: 0,
+            contributed_sessions: HashSet::new(),
             total_requests: 0,
             activity_log: VecDeque::with_capacity(MAX_ACTIVITY_LOG),
             event_log: VecDeque::with_capacity(MAX_EVENT_LOG),
@@ -115,8 +124,9 @@ impl SessionStore {
 
             let transformer = if self.optimize {
                 let tx = new_shared_transformer();
-                // Initialize with history if available
-                if let Some((ref freq, total)) = self.history_data {
+                // Merge DB history + runtime accumulator for best coverage
+                let merged = self.merged_history();
+                if let Some((ref freq, total)) = merged {
                     if let Ok(mut t) = tx.try_lock() {
                         t.load_history(freq, total);
                     }
@@ -132,6 +142,50 @@ impl SessionStore {
             });
         }
         (self.sessions.get_mut(key).unwrap(), is_new)
+    }
+
+    /// Merge DB history with runtime-accumulated tool usage.
+    fn merged_history(&self) -> Option<(Vec<(String, i64)>, i64)> {
+        if self.history_data.is_none() && self.runtime_tool_counts.is_empty() {
+            return None;
+        }
+
+        let mut merged: HashMap<String, i64> = HashMap::new();
+        let mut total_sessions: i64 = 0;
+
+        // Start with DB history
+        if let Some((ref freq, total)) = self.history_data {
+            total_sessions = total;
+            for (name, count) in freq {
+                merged.insert(name.clone(), *count);
+            }
+        }
+
+        // Add runtime data
+        total_sessions += self.runtime_session_count;
+        for (name, count) in &self.runtime_tool_counts {
+            *merged.entry(name.clone()).or_insert(0) += count;
+        }
+
+        if merged.is_empty() || total_sessions < 3 {
+            return None;
+        }
+
+        let freq: Vec<(String, i64)> = merged.into_iter().collect();
+        Some((freq, total_sessions))
+    }
+
+    /// Record tool usage from a session into the runtime accumulator.
+    /// Each session only contributes once (idempotent by session key).
+    pub fn contribute_session_tools(&mut self, session_key: &str, tools: &[(String, usize)]) {
+        if self.contributed_sessions.contains(session_key) {
+            return;
+        }
+        self.contributed_sessions.insert(session_key.to_string());
+        self.runtime_session_count += 1;
+        for (name, _count) in tools {
+            *self.runtime_tool_counts.entry(name.clone()).or_insert(0) += 1;
+        }
     }
 
     pub fn get_session(&self, key: &str) -> Option<&TraceSession> {
@@ -201,13 +255,62 @@ pub fn extract_session_key(
 }
 
 /// Hash the system prompt content to derive a stable session key.
+///
+/// Challenge: LLM agent frameworks (Claude Code, etc.) dynamically
+/// modify the system prompt by loading skills, channel instructions,
+/// and context. We need a hash that's stable across these changes
+/// but unique per project/workspace.
+///
+/// Strategy:
+/// 1. Try to extract project-identifying markers (working directory,
+///    CLAUDE.md content) — these are stable per-project.
+/// 2. Fall back to hashing a mid-range window (chars 200..2200) that
+///    captures project context but skips the generic framework prefix
+///    and the variable skill/channel suffix.
 fn system_prompt_hash(body: &serde_json::Value) -> Option<u64> {
     let text = extract_system_text(body)?;
     if text.is_empty() {
         return None;
     }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
+
+    // Strategy 1: Look for explicit project markers
+    // Claude Code includes "Primary working directory: /path/to/project"
+    // and CLAUDE.md content. These are stable per-project.
+    let mut project_fingerprint = String::new();
+
+    // Extract working directory
+    for marker in &["working directory:", "Working directory:", "cwd:"] {
+        if let Some(pos) = text.find(marker) {
+            let start = pos + marker.len();
+            let end = text[start..].find('\n').map(|i| start + i).unwrap_or(text.len().min(start + 200));
+            project_fingerprint.push_str(text[start..end].trim());
+            break;
+        }
+    }
+
+    if !project_fingerprint.is_empty() {
+        // Also mix in model name to distinguish providers
+        if let Some(model) = body.get("model").and_then(|v| v.as_str()) {
+            project_fingerprint.push_str(model);
+        }
+        project_fingerprint.hash(&mut hasher);
+        return Some(hasher.finish());
+    }
+
+    // Strategy 2: No explicit markers found — hash a stable window.
+    // Skip first 200 chars (generic framework instructions like
+    // "You are Claude Code..."), take up to 2000 chars of the
+    // middle section which typically contains project-specific context.
+    // Skip the tail where skills/channels are appended.
+    let start = 200.min(text.len());
+    let end = 2200.min(text.len());
+    if start >= end {
+        // Very short prompt — just hash it all
+        text.hash(&mut hasher);
+    } else {
+        text[start..end].hash(&mut hasher);
+    }
     Some(hasher.finish())
 }
 
