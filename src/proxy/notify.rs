@@ -66,9 +66,44 @@ pub fn notify(title: String, body: String) {
 
 #[cfg(target_os = "macos")]
 fn platform_notify(title: &str, body: &str) -> std::io::Result<()> {
-    // osascript ships with every macOS install and needs no app bundle.
-    // The `display notification` verb pops a banner in Notification
-    // Center with the invoking process as the source.
+    // macOS notification permission is per-host-app, and both CLI
+    // paths below have gotchas worth documenting:
+    //
+    // 1. `terminal-notifier` — a proper bundled .app, installed via
+    //    `brew install terminal-notifier`. First invocation prompts for
+    //    notification permission; once granted, notifications show up
+    //    attributed to "terminal-notifier" and survive System Settings.
+    //    Preferred when present because it's the only path that gives
+    //    modern macOS a recognizable app identity without Apple
+    //    Developer signing.
+    //
+    // 2. `osascript 'display notification'` — always available, but new
+    //    macOS (Sonoma+) silently drops these unless the user has
+    //    explicitly enabled notifications for "Script Editor" in
+    //    System Settings → Notifications. osascript exits 0 either way,
+    //    so we can't detect the drop. Users who hit this see nothing
+    //    and have to toggle Script Editor's notification permission
+    //    manually.
+    //
+    // Try terminal-notifier first, fall through to osascript.
+    if let Ok(status) = std::process::Command::new("terminal-notifier")
+        .arg("-title")
+        .arg("merlint")
+        .arg("-subtitle")
+        .arg(title)
+        .arg("-message")
+        .arg(body)
+        .arg("-group")
+        .arg("merlint-cache-ttl")
+        .arg("-sender")
+        .arg("com.apple.Terminal")
+        .status()
+    {
+        if status.success() {
+            return Ok(());
+        }
+    }
+
     let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
         "display notification \"{}\" with title \"{}\"",
