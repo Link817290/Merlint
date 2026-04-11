@@ -134,6 +134,15 @@ impl SessionStore {
     /// Get or create a session slot, optionally attaching a project path.
     pub fn get_or_create_with_project(&mut self, key: &str, project_path: Option<String>) -> (&mut SessionSlot, bool) {
         let is_new = !self.sessions.contains_key(key);
+        if !is_new {
+            // Update project_path if it was missing before
+            if project_path.is_some() {
+                let slot = self.sessions.get_mut(key).unwrap();
+                if slot.project_path.is_none() {
+                    slot.project_path = project_path.clone();
+                }
+            }
+        }
         if is_new {
             let mut session = TraceSession::new();
             session.meta_session_key = Some(key.to_string());

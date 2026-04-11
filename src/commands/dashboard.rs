@@ -44,6 +44,7 @@ struct EventItem {
 #[derive(Debug, Clone)]
 struct SessionInfo {
     key: String,
+    project: String,
     request_count: u64,
     total_tokens: u64,
     prompt_tokens: u64,
@@ -52,7 +53,6 @@ struct SessionInfo {
     tokens_saved: i64,
     tools_tracked: u64,
     total_latency_ms: u64,
-    api_cache_hit_rate: u64,
     pruning_suspended: bool,
 }
 
@@ -157,6 +157,7 @@ async fn fetch_status(client: &reqwest::Client, port: u16) -> anyhow::Result<Pro
             arr.iter()
                 .map(|s| SessionInfo {
                     key: s["key"].as_str().unwrap_or("?").to_string(),
+                    project: s["project"].as_str().unwrap_or("unknown").to_string(),
                     request_count: s["request_count"].as_u64().unwrap_or(0),
                     total_tokens: s["total_tokens"].as_u64().unwrap_or(0),
                     prompt_tokens: s["prompt_tokens"].as_u64().unwrap_or(0),
@@ -165,7 +166,6 @@ async fn fetch_status(client: &reqwest::Client, port: u16) -> anyhow::Result<Pro
                     tokens_saved: s["tokens_saved"].as_i64().unwrap_or(0),
                     tools_tracked: s["tools_tracked"].as_u64().unwrap_or(0),
                     total_latency_ms: s["total_latency_ms"].as_u64().unwrap_or(0),
-                    api_cache_hit_rate: s["api_cache_hit_rate"].as_u64().unwrap_or(0),
                     pruning_suspended: s["pruning_suspended"].as_bool().unwrap_or(false),
                 })
                 .collect()
@@ -317,7 +317,7 @@ fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
         Span::raw("  │  "),
         Span::styled(status_text, Style::default().fg(status_color).bold()),
         Span::raw("  │  "),
-        Span::styled(format!("{} sessions", session_count), Style::default().fg(Color::White)),
+        Span::styled(format!("{} projects", session_count), Style::default().fg(Color::White)),
         Span::raw("  │  "),
         Span::styled(format!("{} reqs", total_req), Style::default().fg(Color::White)),
     ];
@@ -436,7 +436,7 @@ fn render_body(f: &mut Frame, area: Rect, status: &ProxyStatus) {
         let body = Paragraph::new(msg).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Sessions ")
+                .title(" Projects ")
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
         f.render_widget(body, body_chunks[0]);
@@ -462,64 +462,93 @@ fn render_body(f: &mut Frame, area: Rect, status: &ProxyStatus) {
 }
 
 fn render_sessions(f: &mut Frame, area: Rect, status: &ProxyStatus) {
-    // Filter out empty sessions, then cap to what fits
+    // Filter out empty sessions, group by project
     let active: Vec<&SessionInfo> = status.sessions.iter()
         .filter(|s| s.request_count > 0)
         .collect();
-    let max_cards = (area.height as usize / 5).max(1);
-    let count = active.len().min(max_cards);
-    if count == 0 {
-        let msg = Paragraph::new("  No active sessions yet...")
+
+    if active.is_empty() {
+        let msg = Paragraph::new("  No active projects yet...")
             .style(Style::default().fg(Color::DarkGray));
         f.render_widget(msg, area);
         return;
     }
+
+    // Group by project path
+    let mut groups: Vec<(String, Vec<&SessionInfo>)> = Vec::new();
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for s in &active {
+        let proj = if s.project != "unknown" { &s.project } else { &s.key };
+        if let Some(&idx) = seen.get(proj) {
+            groups[idx].1.push(s);
+        } else {
+            seen.insert(proj.clone(), groups.len());
+            groups.push((proj.clone(), vec![s]));
+        }
+    }
+
+    let max_cards = (area.height as usize / 5).max(1);
+    let count = groups.len().min(max_cards);
+
     let constraints: Vec<Constraint> = (0..count)
         .map(|_| Constraint::Min(5))
         .collect();
 
-    let session_chunks = Layout::default()
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    for (i, session) in active.iter().take(count).enumerate() {
-        render_session_card(f, session_chunks[i], session);
+    for (i, (proj_path, sessions)) in groups.iter().take(count).enumerate() {
+        render_project_card(f, chunks[i], proj_path, sessions);
     }
 }
 
-fn render_session_card(f: &mut Frame, area: Rect, session: &SessionInfo) {
-    let key_display = if session.key.len() > 20 {
-        format!("{}...", &session.key[..20])
+fn render_project_card(f: &mut Frame, area: Rect, proj_path: &str, sessions: &[&SessionInfo]) {
+    // Extract short project name from path
+    let proj_name = proj_path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(proj_path);
+    let title_display = if proj_name.len() > 24 {
+        format!("{}...", &proj_name[..21])
     } else {
-        session.key.clone()
+        proj_name.to_string()
+    };
+    let conv_label = if sessions.len() > 1 {
+        format!(" ({} convs)", sessions.len())
+    } else {
+        String::new()
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Blue))
-        .title(format!(" {} ", key_display))
+        .title(format!(" {}{} ", title_display, conv_label))
         .title_style(Style::default().fg(Color::Cyan).bold());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    // Aggregate across all sessions in this project
+    let total_reqs: u64 = sessions.iter().map(|s| s.request_count).sum();
+    let total_tokens: u64 = sessions.iter().map(|s| s.total_tokens).sum();
+    let total_prompt: u64 = sessions.iter().map(|s| s.prompt_tokens).sum();
+    let total_completion: u64 = sessions.iter().map(|s| s.completion_tokens).sum();
+    let total_cache_read: u64 = sessions.iter().map(|s| s.cache_read_tokens).sum();
+    let total_saved: i64 = sessions.iter().map(|s| s.tokens_saved).sum();
+    let total_tools: u64 = sessions.iter().map(|s| s.tools_tracked).max().unwrap_or(0);
+    let total_latency: u64 = sessions.iter().map(|s| s.total_latency_ms).sum();
 
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(inner);
 
-    let avg_latency = if session.request_count > 0 {
-        session.total_latency_ms / session.request_count
-    } else {
-        0
-    };
+    let avg_latency = if total_reqs > 0 { total_latency / total_reqs } else { 0 };
 
     let stats = vec![
         Line::from(vec![
             Span::styled("  Reqs:   ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{}", session.request_count),
+                format!("{}", total_reqs),
                 Style::default().fg(Color::White).bold(),
             ),
             Span::styled(
@@ -530,26 +559,26 @@ fn render_session_card(f: &mut Frame, area: Rect, session: &SessionInfo) {
         Line::from(vec![
             Span::styled("  Tokens: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format_tokens(session.total_tokens),
+                format_tokens(total_tokens),
                 Style::default().fg(Color::White).bold(),
             ),
             Span::styled(
                 format!(
                     "  ({}p / {}c)",
-                    format_tokens(session.prompt_tokens),
-                    format_tokens(session.completion_tokens)
+                    format_tokens(total_prompt),
+                    format_tokens(total_completion)
                 ),
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Saved:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Pruned: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("~{}", format_tokens(session.tokens_saved.max(0) as u64)),
+                format!("~{}", format_tokens(total_saved.max(0) as u64)),
                 Style::default().fg(Color::Green).bold(),
             ),
             Span::styled(
-                format!("    {} tools", session.tools_tracked),
+                format!("    {} tools", total_tools),
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
@@ -557,16 +586,17 @@ fn render_session_card(f: &mut Frame, area: Rect, session: &SessionInfo) {
     let stats_widget = Paragraph::new(stats);
     f.render_widget(stats_widget, cols[0]);
 
-    // Right: cache gauge
-    let cache_pct = if session.prompt_tokens > 0 {
-        (session.cache_read_tokens as f64 / session.prompt_tokens as f64 * 100.0) as u16
+    // Right: API cache gauge (Anthropic prompt caching, NOT merlint pruning)
+    let api_cache_pct = if total_prompt > 0 {
+        (total_cache_read as f64 / total_prompt as f64 * 100.0) as u16
     } else {
         0
     };
 
-    let cache_color = if cache_pct >= 60 { Color::Green } else if cache_pct >= 30 { Color::Yellow } else { Color::Red };
+    let cache_color = if api_cache_pct >= 60 { Color::Green } else if api_cache_pct >= 30 { Color::Yellow } else { Color::Red };
 
-    let prune_status = if session.pruning_suspended {
+    let any_paused = sessions.iter().any(|s| s.pruning_suspended);
+    let prune_status = if any_paused {
         Span::styled(" [paused]", Style::default().fg(Color::Yellow))
     } else {
         Span::styled("", Style::default())
@@ -574,17 +604,17 @@ fn render_session_card(f: &mut Frame, area: Rect, session: &SessionInfo) {
 
     let right_lines = vec![
         Line::from(vec![
-            Span::styled("  Cache: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{}%", cache_pct), Style::default().fg(cache_color).bold()),
-            Span::styled(format!("  API: {}%", session.api_cache_hit_rate), Style::default().fg(Color::DarkGray)),
+            Span::styled("  API$: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{}%", api_cache_pct), Style::default().fg(cache_color).bold()),
+            Span::styled(format!(" ({})", format_tokens(total_cache_read)), Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(Span::styled(
-            format!("  {}", make_bar(cache_pct, 20)),
+            format!("  {}", make_bar(api_cache_pct, 20)),
             Style::default().fg(cache_color),
         )),
         Line::from(vec![
             Span::styled("  Prune: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{} tools", session.tools_tracked), Style::default().fg(Color::White)),
+            Span::styled(format!("{} tools", total_tools), Style::default().fg(Color::White)),
             prune_status,
         ]),
     ];

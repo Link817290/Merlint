@@ -151,10 +151,11 @@ async fn handle_request(
         && !path.contains("/batches");
 
     // Extract session key for multi-session routing
+    // Non-chat requests don't create sessions — they're only logged as activity
     let session_key = if is_chat {
         extract_session_key(&headers, &body_bytes)
     } else {
-        "default".to_string()
+        "__non_chat__".to_string()
     };
 
     // Extract project path for display (only on first request)
@@ -248,13 +249,14 @@ async fn handle_request(
         let mut store_guard = store.lock().await;
         let _ = store_guard.get_or_create_with_project(&session_key, project_path.clone());
         let count = store_guard.session_count();
-        let project_display = project_path.as_deref().unwrap_or("unknown");
+        let project_full = project_path.as_deref().unwrap_or("unknown");
+        let project_display = project_full.rsplit('/').find(|s| !s.is_empty()).unwrap_or(project_full);
         store_guard.log_event(
             super::session_store::EventKind::NewSession,
             format!("New session: {} ({})", project_display, count),
         );
         drop(store_guard);
-        info!("New session detected: [{}] project={} (active sessions: {})", session_key, project_display, count);
+        info!("New session detected: [{}] project={} (active sessions: {})", session_key, project_full, count);
     }
 
     let mut forward_req = client.request(
@@ -470,6 +472,7 @@ async fn handle_status(store: &SharedSessionStore, spend_log: &Option<SharedSpen
     let mut sessions = Vec::new();
 
     for slot in s.all_slots() {
+        if slot.key == "__non_chat__" { continue; }
         let (key, session, tx_opt, project) = (slot.key, slot.session, slot.transformer, slot.project_path);
         let total_tokens: u64 = session.entries.iter().filter_map(|e| e.total_tokens()).sum();
         let total_prompt: u64 = session.entries.iter().filter_map(|e| e.prompt_tokens()).sum();
