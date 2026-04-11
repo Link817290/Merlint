@@ -736,7 +736,18 @@ async fn process_chat_response(
                     }
                 }
             }
-            if let Ok(resp_val) = serde_json::from_slice::<serde_json::Value>(resp_bytes) {
+            // NB: use anthropic_value_from_bytes here, not from_slice. Anthropic
+            // native streaming (Claude Code's default) returns SSE frames that
+            // from_slice can't parse at all, so this branch was silently skipped
+            // for every streaming request — record_cache_stats never fired, and
+            // pruning_suspended stayed at its initial `false`. That let the
+            // transformer prune aggressively even when the upstream cache was
+            // warm, which breaks the cache prefix and costs net money. Reusing
+            // the SSE reassembler means Anthropic streaming now updates the
+            // transformer's cache stats the same way a non-streaming response
+            // would, and pruning_suspended gets flipped to true whenever the
+            // cache hit rate is already healthy.
+            if let Some(resp_val) = anthropic_value_from_bytes(resp_bytes) {
                 let usage = resp_val.get("usage");
                 let cache_read = usage
                     .and_then(|u| u.get("cache_read_input_tokens"))
