@@ -301,7 +301,11 @@ function updateText(parent, sel, val) {
 }
 
 // Build project card HTML (only used for first render)
-function buildProjectHTML(projPath, projDisplay, sessions, totReq, totTokens, totPrompt, totCompletion, totCacheRead, totSaved, cachePct, convCount) {
+function buildProjectHTML(projPath, projDisplay, sessions, totReq, totTokens, totPrompt, totCompletion, totCacheRead, totCacheCreation, totSaved, totCacheSavingsUsd, cachePct, convCount) {
+  const cacheSavingsLabel = totCacheSavingsUsd > 0.005
+    ? `$${totCacheSavingsUsd.toFixed(2)} saved`
+    : '—';
+  const cacheHitTooltip = `${fmt(totCacheRead)} of ${fmt(totCacheRead + totCacheCreation)} cacheable tokens served from cache (reads / (reads + writes))`;
   return `<div class="project-header">
     <span class="project-name" title="${projPath}">${projDisplay}</span>
     <span class="project-meta pm-count">${convCount} conversation${convCount>1?'s':''}</span>
@@ -309,13 +313,13 @@ function buildProjectHTML(projPath, projDisplay, sessions, totReq, totTokens, to
   <div class="project-stats">
     <div class="project-stat"><div class="project-stat-val pv-req">${totReq}</div><div class="project-stat-label">Requests</div></div>
     <div class="project-stat"><div class="project-stat-val pv-tok">${fmt(totTokens)}</div><div class="project-stat-label">Total Tokens</div></div>
-    <div class="project-stat"><div class="project-stat-val green pv-pruned">${fmt(totSaved)}</div><div class="project-stat-label">Pruned</div></div>
-    <div class="project-stat" title="${fmt(totCacheRead)} of ${fmt(totPrompt)} prompt tokens served from Anthropic's prompt cache"><div class="project-stat-val pv-cache">${cachePct}%</div><div class="project-stat-label">Cache Hit</div></div>
+    <div class="project-stat" title="Net dollars Anthropic's prompt cache saved vs. sending every token at the full input price (priced against Sonnet 4)"><div class="project-stat-val green pv-savings">${cacheSavingsLabel}</div><div class="project-stat-label">Cache Savings</div></div>
+    <div class="project-stat" title="${cacheHitTooltip}"><div class="project-stat-val pv-cache">${cachePct}%</div><div class="project-stat-label">Cache Reuse</div></div>
   </div>
   <div class="token-breakdown">
-    <span class="tb-prompt" title="Total prompt input across this project (fresh + cached)">prompt: ${fmt(totPrompt)}</span>
+    <span class="tb-prompt" title="Total prompt input across this project (fresh + cached + cache writes)">prompt: ${fmt(totPrompt)}</span>
     <span class="tb-comp">completion: ${fmt(totCompletion)}</span>
-    <span class="cached-tok tb-acache" title="Tokens served from Anthropic's prompt cache (subset of prompt total)">cache: ${fmt(totCacheRead)} (${cachePct}%)</span>
+    <span class="cached-tok tb-acache" title="Tokens served from Anthropic's prompt cache">cache read: ${fmt(totCacheRead)}</span>
     <span class="saved-tok tb-pruned" title="Tokens saved by merlint's tool pruning & compression">pruned: ${fmt(totSaved)}</span>
   </div>
   <div class="bar-bg" style="margin:0 12px"><div class="bar-fill green" style="width:${Math.min(cachePct,100)}%"></div></div>
@@ -335,30 +339,53 @@ function buildConvRows(sessions) {
     const histBadge = (histReq > 0 && liveReq === 0)
       ? '<span class="badge-hist" title="Carried over from prior proxy run">HIST</span>'
       : '';
-    const latStr = s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms';
     const cacheRead = s.cache_read_tokens || 0;
+    const cacheCreation = s.cache_creation_tokens || 0;
     const totalPrompt = s.prompt_tokens || 0;
-    const cp = totalPrompt > 0 ? Math.round(cacheRead / totalPrompt * 100) : 0;
-    const saved = s.tokens_saved > 0 ? `<span class="conv-saved">-${fmt(s.tokens_saved)} saved</span>` : '';
-    const cs = cacheState(s);
-    // Carry whichever anchor we actually used (prefer last_request_at, the
-    // upstream-forward timestamp, over last_activity, the trace-entry one)
-    // so the 1-second ticker can re-evaluate without hitting /status again.
-    const anchorTs = s.last_request_at || s.last_activity || '';
-    const cacheCountdown = `<span class="cache-ttl ${cs.cls}" data-cache-anchor="${anchorTs}" title="${cs.tip}">${cs.label}</span>`;
+    // Use the same "cache reuse" formula as the project card so per-session
+    // and per-project numbers match: reads / (reads + writes). Prevents
+    // confusing "98% at the top, 97% in the row" mismatches.
+    const cacheDenom = cacheRead + cacheCreation;
+    const cp = cacheDenom > 0 ? Math.round(cacheRead / cacheDenom * 100) : 0;
+    const cacheTitle = `${fmt(cacheRead)} of ${fmt(cacheDenom)} cacheable tokens served from cache`;
+    const detail = convDetailFields(s, cp, cacheRead, totalPrompt, cacheTitle);
     return `<div class="conv-item">
       <span class="conv-id">#${i+1} ${badge}${histBadge}</span>
       <div class="conv-detail">
-        <span title="requests">${s.request_count} req</span>
-        <span title="total tokens (prompt+completion)">${fmt(s.total_tokens)} tok</span>
-        <span title="total prompt / completion">${fmt(totalPrompt)}p / ${fmt(s.completion_tokens||0)}c</span>
-        <span class="conv-cached" title="${fmt(cacheRead)} of ${fmt(totalPrompt)} prompt tokens served from Anthropic's API cache">cache: ${fmt(cacheRead)} (${cp}%)</span>
-        <span title="total latency">${latStr}</span>
-        ${cacheCountdown}
-        ${saved}
+        <span title="requests">${detail.req}</span>
+        <span title="total tokens (prompt+completion)">${detail.tok}</span>
+        <span title="total prompt / completion">${detail.breakdown}</span>
+        <span class="conv-cached" title="${cacheTitle}">${detail.cache}</span>
+        <span title="total latency">${detail.latency}</span>
+        ${detail.countdown}
+        ${detail.saved}
       </div>
     </div>`;
   }).join('');
+}
+
+// Derive the textContent strings for every conv-detail span. Shared between
+// the initial render (buildConvRows) and the incremental in-place update
+// below so there's exactly one format per field and the row doesn't
+// visibly reflow from "cache: 48.6M (98%)" to "98% cache" on the first
+// refresh after initial render.
+function convDetailFields(s, cp, cacheRead, totalPrompt, cacheTitle) {
+  const latStr = s.total_latency_ms > 1000
+    ? (s.total_latency_ms / 1000).toFixed(1) + 's'
+    : s.total_latency_ms + 'ms';
+  const cs = cacheState(s);
+  const anchorTs = s.last_request_at || s.last_activity || '';
+  return {
+    req: s.request_count + ' req',
+    tok: fmt(s.total_tokens) + ' tok',
+    breakdown: fmt(totalPrompt) + 'p / ' + fmt(s.completion_tokens || 0) + 'c',
+    cache: 'cache: ' + fmt(cacheRead) + ' (' + cp + '%)',
+    latency: latStr,
+    countdown: `<span class="cache-ttl ${cs.cls}" data-cache-anchor="${anchorTs}" title="${cs.tip}">${cs.label}</span>`,
+    saved: s.tokens_saved > 0 ? `<span class="conv-saved">-${fmt(s.tokens_saved)} saved</span>` : '',
+    _state: cs,
+    _anchor: anchorTs,
+  };
 }
 
 // Incremental list update — only add new items at top
@@ -440,9 +467,17 @@ async function refresh() {
     countUp(costEl, todayCost, 'cost', '$', '', 2);
 
     const savedEl = document.getElementById('today-saved');
+    const todaySavedPct = d.today_cache_savings_pct || 0;
     if (todaySaved > 0.01) {
-      savedEl.textContent = 'saved $'+todaySaved.toFixed(2)+' cache';
-      savedEl.title = 'Dollar value Anthropic\'s prompt cache saved today, priced against Sonnet 4. Without the cache, today would have cost $'+(todayCost+todaySaved).toFixed(2)+'.';
+      // Headline narrative: "you spent $X but caching saved you $Y — Z% off".
+      // Percentage is the real kicker because it makes the caching feel like
+      // a persistent discount regardless of absolute usage scale.
+      const pctLabel = todaySavedPct > 0 ? ' (' + todaySavedPct + '% off)' : '';
+      savedEl.textContent = 'saved $' + todaySaved.toFixed(2) + pctLabel;
+      const hypothetical = todayCost + todaySaved;
+      savedEl.title = 'Anthropic\'s prompt cache saved you $' + todaySaved.toFixed(2)
+        + ' today. Without the cache, today would have cost $' + hypothetical.toFixed(2)
+        + ' (priced against Sonnet 4).';
       savedEl.style.opacity = '1';
     } else {
       savedEl.style.opacity = '0';
@@ -480,10 +515,17 @@ async function refresh() {
         const totPrompt = sessions.reduce((a,s) => a + (s.prompt_tokens||0), 0);
         const totCompletion = sessions.reduce((a,s) => a + (s.completion_tokens||0), 0);
         const totCacheRead = sessions.reduce((a,s) => a + (s.cache_read_tokens||0), 0);
+        const totCacheCreation = sessions.reduce((a,s) => a + (s.cache_creation_tokens||0), 0);
         const totSaved = sessions.reduce((a,s) => a + Math.max(0, s.tokens_saved), 0);
+        const totCacheSavingsUsd = sessions.reduce((a,s) => a + (s.cache_savings_usd||0), 0);
         const convCount = sessions.length;
-        // Cache hit rate denominator is the true prompt total, so cachePct stays in [0,100].
-        const cachePct = totPrompt > 0 ? Math.round(totCacheRead / totPrompt * 100) : 0;
+        // Cache "reuse" — formula B: of the cacheable content (reads + writes),
+        // what fraction actually came from cache. This reaches ~100% after the
+        // first turn of a conversation and tells the "your context reused 99%
+        // efficiently" story. Much more engaging than dividing by total_prompt
+        // which drags the number down with non-cacheable fresh input.
+        const cacheDenom = totCacheRead + totCacheCreation;
+        const cachePct = cacheDenom > 0 ? Math.round(totCacheRead / cacheDenom * 100) : 0;
 
         let el = document.getElementById(groupKey);
         if (!el) {
@@ -491,17 +533,20 @@ async function refresh() {
           el = document.createElement('div');
           el.id = groupKey;
           el.className = 'project-group';
-          el.innerHTML = buildProjectHTML(projPath, projDisplay, sessions, totReq, totTokens, totPrompt, totCompletion, totCacheRead, totSaved, cachePct, convCount);
+          el.innerHTML = buildProjectHTML(projPath, projDisplay, sessions, totReq, totTokens, totPrompt, totCompletion, totCacheRead, totCacheCreation, totSaved, totCacheSavingsUsd, cachePct, convCount);
           sc.appendChild(el);
         } else {
           // Incremental update — only touch text nodes
           updateText(el, '.pv-req', totReq);
           updateText(el, '.pv-tok', fmt(totTokens));
-          updateText(el, '.pv-pruned', fmt(totSaved));
+          const savingsLabel = totCacheSavingsUsd > 0.005
+            ? '$' + totCacheSavingsUsd.toFixed(2) + ' saved'
+            : '—';
+          updateText(el, '.pv-savings', savingsLabel);
           updateText(el, '.pv-cache', cachePct + '%');
           updateText(el, '.tb-prompt', 'prompt: ' + fmt(totPrompt));
           updateText(el, '.tb-comp', 'completion: ' + fmt(totCompletion));
-          updateText(el, '.tb-acache', 'api_cache: ' + fmt(totCacheRead) + ' (' + cachePct + '%)');
+          updateText(el, '.tb-acache', 'cache read: ' + fmt(totCacheRead));
           updateText(el, '.tb-pruned', 'pruned: ' + fmt(totSaved));
           updateText(el, '.pm-count', convCount + ' conversation' + (convCount>1?'s':''));
           const bar = el.querySelector('.bar-fill');
@@ -527,27 +572,72 @@ async function refresh() {
               if (labelEl) labelEl.textContent = `Sessions (${convCount})`;
               sessions.forEach((s, i) => {
                 const row = convList.children[i + 1];
-                if (row) {
-                  const spans = row.querySelectorAll('.conv-detail span');
-                  if (spans[0]) spans[0].textContent = s.request_count + ' req';
-                  if (spans[1]) spans[1].textContent = fmt(s.total_tokens) + ' tok';
-                  if (spans[2]) spans[2].textContent = fmt(s.prompt_tokens||0) + 'p / ' + fmt(s.completion_tokens||0) + 'c';
-                  const cp = (s.prompt_tokens||0) > 0 ? Math.round((s.cache_read_tokens||0)/s.prompt_tokens*100) : 0;
-                  if (spans[3]) spans[3].textContent = cp + '% cache';
-                  const lt = s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms';
-                  if (spans[4]) spans[4].textContent = lt;
-                  // spans[5] is the cache-ttl countdown span — recompute
-                  // every refresh so it ticks down even when the session's
-                  // other stats haven't changed.
-                  const ttlSpan = spans[5];
-                  if (ttlSpan && ttlSpan.classList.contains('cache-ttl')) {
-                    const cs = cacheState(s);
-                    ttlSpan.textContent = cs.label;
-                    ttlSpan.title = cs.tip;
-                    ttlSpan.setAttribute('data-cache-anchor', s.last_request_at || s.last_activity || '');
-                    ttlSpan.classList.remove('cache-warm','cache-expiring','cache-cold','cache-idle');
+                if (!row) return;
+                // Keep badges in sync if pruning_suspended or hist→live
+                // transitioned since the row was first rendered.
+                const idEl = row.querySelector('.conv-id');
+                if (idEl) {
+                  const badge = s.pruning_suspended
+                    ? '<span class="badge paused">CACHE</span>'
+                    : '<span class="badge active">PRUNE</span>';
+                  const liveReq = s.live_request_count || 0;
+                  const histReq = s.historical_request_count || 0;
+                  const histBadge = (histReq > 0 && liveReq === 0)
+                    ? '<span class="badge-hist" title="Carried over from prior proxy run">HIST</span>'
+                    : '';
+                  const wanted = `#${i + 1} ${badge}${histBadge}`;
+                  if (idEl.innerHTML !== wanted) idEl.innerHTML = wanted;
+                }
+
+                const cacheRead = s.cache_read_tokens || 0;
+                const cacheCreation = s.cache_creation_tokens || 0;
+                const totalPrompt = s.prompt_tokens || 0;
+                const cacheDenom = cacheRead + cacheCreation;
+                const cp = cacheDenom > 0 ? Math.round(cacheRead / cacheDenom * 100) : 0;
+                const cacheTitle = `${fmt(cacheRead)} of ${fmt(cacheDenom)} cacheable tokens served from cache`;
+                const f = convDetailFields(s, cp, cacheRead, totalPrompt, cacheTitle);
+
+                // Write each field only if it actually changed, so the DOM
+                // stays stable between refreshes and the browser doesn't
+                // reflow the conv-detail on every 2-second tick.
+                const spans = row.querySelectorAll('.conv-detail > span');
+                const setIfDiff = (el, txt) => {
+                  if (el && el.textContent !== txt) el.textContent = txt;
+                };
+                setIfDiff(spans[0], f.req);
+                setIfDiff(spans[1], f.tok);
+                setIfDiff(spans[2], f.breakdown);
+                setIfDiff(spans[3], f.cache);
+                if (spans[3] && spans[3].title !== cacheTitle) spans[3].title = cacheTitle;
+                setIfDiff(spans[4], f.latency);
+
+                // spans[5] is the cache-ttl countdown. The 1-second ticker
+                // also writes to it, so we only need to sync the anchor
+                // attribute / class / tip here; label text is handled by
+                // whichever of the two runs first after a change.
+                const ttlSpan = spans[5];
+                if (ttlSpan && ttlSpan.classList.contains('cache-ttl')) {
+                  const cs = f._state;
+                  if (ttlSpan.textContent !== cs.label) ttlSpan.textContent = cs.label;
+                  if (ttlSpan.title !== cs.tip) ttlSpan.title = cs.tip;
+                  if (ttlSpan.getAttribute('data-cache-anchor') !== f._anchor) {
+                    ttlSpan.setAttribute('data-cache-anchor', f._anchor);
+                  }
+                  if (!ttlSpan.classList.contains(cs.cls)) {
+                    ttlSpan.classList.remove('cache-warm', 'cache-expiring', 'cache-cold', 'cache-idle');
                     ttlSpan.classList.add(cs.cls);
                   }
+                }
+
+                // spans[6] is the optional "-N saved" trailer. It may or
+                // may not exist depending on whether tokens_saved > 0 at
+                // first render. Keep it in sync without reflowing on each
+                // refresh: update in place if present, don't create on
+                // the fly (full rebuild path handles new appearance).
+                const savedEl = spans[6];
+                if (savedEl && savedEl.classList.contains('conv-saved')) {
+                  const wanted = s.tokens_saved > 0 ? `-${fmt(s.tokens_saved)} saved` : '';
+                  if (savedEl.textContent !== wanted) savedEl.textContent = wanted;
                 }
               });
             }
