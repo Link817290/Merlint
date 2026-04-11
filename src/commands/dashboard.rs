@@ -17,6 +17,9 @@ struct DashboardState {
     status: Option<ProxyStatus>,
     error: Option<String>,
     port: u16,
+    tick: u64,
+    prev_requests: u64,
+    sparkline: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,18 +98,32 @@ async fn run_loop(
         status: None,
         error: None,
         port,
+        tick: 0,
+        prev_requests: 0,
+        sparkline: vec![0; 30],
     };
 
     loop {
         match fetch_status(&client, port).await {
             Ok(status) => {
+                // Track request delta for sparkline
+                let new_reqs = status.total_requests;
+                let delta = new_reqs.saturating_sub(state.prev_requests);
+                state.prev_requests = new_reqs;
+                state.sparkline.push(delta);
+                if state.sparkline.len() > 30 {
+                    state.sparkline.remove(0);
+                }
                 state.status = Some(status);
                 state.error = None;
             }
             Err(e) => {
+                state.sparkline.push(0);
+                if state.sparkline.len() > 30 { state.sparkline.remove(0); }
                 state.error = Some(e.to_string());
             }
         }
+        state.tick += 1;
 
         terminal.draw(|f| render(f, &state))?;
 
@@ -204,6 +221,7 @@ fn render(f: &mut Frame, state: &DashboardState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // header
+            Constraint::Length(1),  // sparkline
             Constraint::Min(0),    // body
             Constraint::Length(1), // footer
         ])
@@ -212,24 +230,66 @@ fn render(f: &mut Frame, state: &DashboardState) {
     // Header
     render_header(f, chunks[0], state);
 
+    // Sparkline bar
+    render_sparkline(f, chunks[1], state);
+
     // Body
     match (&state.status, &state.error) {
-        (_, Some(err)) => render_offline(f, chunks[1], state.port, err),
-        (Some(status), None) => render_body(f, chunks[1], status),
+        (_, Some(err)) => render_offline(f, chunks[2], state.port, err),
+        (Some(status), None) => render_body(f, chunks[2], status),
         (None, None) => {
             let body = Paragraph::new("  Connecting...")
                 .block(Block::default().borders(Borders::ALL));
-            f.render_widget(body, chunks[1]);
+            f.render_widget(body, chunks[2]);
         }
     }
 
-    // Footer
+    // Footer with animated dots
+    let dots = match state.tick % 4 { 0 => "   ", 1 => ".  ", 2 => ".. ", _ => "..." };
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" q", Style::default().fg(Color::Yellow).bold()),
         Span::raw(" quit  │  "),
-        Span::styled("refreshes every 1s", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("refreshing{}", dots), Style::default().fg(Color::DarkGray)),
     ]));
-    f.render_widget(footer, chunks[2]);
+    f.render_widget(footer, chunks[3]);
+}
+
+fn render_sparkline(f: &mut Frame, area: Rect, state: &DashboardState) {
+    let spark_chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max_val = state.sparkline.iter().copied().max().unwrap_or(1).max(1);
+    let width = area.width as usize;
+
+    let mut spans = vec![Span::styled("  ", Style::default())];
+
+    // Fit sparkline to available width
+    let data = if state.sparkline.len() > width.saturating_sub(4) {
+        &state.sparkline[state.sparkline.len() - (width.saturating_sub(4))..]
+    } else {
+        &state.sparkline
+    };
+
+    for (i, &val) in data.iter().enumerate() {
+        let level = if val == 0 { 0 } else { ((val as f64 / max_val as f64) * 7.0) as usize };
+        let ch = spark_chars[level.min(7)];
+        // Color gradient: dim for old, bright for recent
+        let age = data.len().saturating_sub(i + 1);
+        let color = if val == 0 {
+            Color::DarkGray
+        } else if age < 3 {
+            Color::Green
+        } else if age < 10 {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+    }
+
+    // Label
+    spans.push(Span::styled(" reqs/s", Style::default().fg(Color::DarkGray)));
+
+    let sparkline_widget = Paragraph::new(Line::from(spans));
+    f.render_widget(sparkline_widget, area);
 }
 
 fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
@@ -264,7 +324,13 @@ fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
 
     if today_cost > 0.0 {
         spans.push(Span::raw("  │  "));
-        spans.push(Span::styled(format!("${:.2}", today_cost), Style::default().fg(Color::Yellow)));
+        // Pulse the $ sign on odd ticks when there's activity
+        let cost_style = if state.tick % 2 == 0 && state.sparkline.last().copied().unwrap_or(0) > 0 {
+            Style::default().fg(Color::White).bold()
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+        spans.push(Span::styled(format!("${:.2}", today_cost), cost_style));
         if today_saved > 0.01 {
             spans.push(Span::styled(format!(" (-${:.2})", today_saved), Style::default().fg(Color::Green)));
         }
