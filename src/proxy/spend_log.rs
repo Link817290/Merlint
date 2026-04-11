@@ -216,7 +216,8 @@ impl SpendLog {
                 COALESCE(SUM(cost_usd), 0.0),
                 COALESCE(SUM(cost_saved_usd), 0.0),
                 COALESCE(SUM(prompt_tokens + completion_tokens), 0),
-                COALESCE(SUM(tokens_saved), 0)
+                COALESCE(SUM(tokens_saved), 0),
+                COALESCE(SUM(cache_read_tokens), 0)
             FROM spend_log",
             [],
             |row| Ok(SpendSummary {
@@ -225,6 +226,7 @@ impl SpendLog {
                 total_saved_usd: row.get(2)?,
                 total_tokens: row.get(3)?,
                 total_tokens_saved: row.get(4)?,
+                total_cache_read_tokens: row.get(5)?,
             }),
         ).map_err(Into::into)
     }
@@ -237,7 +239,8 @@ impl SpendLog {
                 COALESCE(SUM(cost_usd), 0.0),
                 COALESCE(SUM(cost_saved_usd), 0.0),
                 COALESCE(SUM(prompt_tokens + completion_tokens), 0),
-                COALESCE(SUM(tokens_saved), 0)
+                COALESCE(SUM(tokens_saved), 0),
+                COALESCE(SUM(cache_read_tokens), 0)
             FROM spend_log
             WHERE timestamp >= datetime('now', ?1)",
             params![format!("-{} days", days)],
@@ -247,6 +250,7 @@ impl SpendLog {
                 total_saved_usd: row.get(2)?,
                 total_tokens: row.get(3)?,
                 total_tokens_saved: row.get(4)?,
+                total_cache_read_tokens: row.get(5)?,
             }),
         ).map_err(Into::into)
     }
@@ -449,6 +453,11 @@ pub struct SpendSummary {
     pub total_saved_usd: f64,
     pub total_tokens: i64,
     pub total_tokens_saved: i64,
+    /// Sum of `cache_read_tokens` across entries in the window. The dashboard
+    /// uses this to compute a truthful "cache savings today" number — the
+    /// dollar value Anthropic's prompt cache shaved off the theoretical
+    /// no-cache cost, which is the real source of savings for most users.
+    pub total_cache_read_tokens: i64,
 }
 
 #[derive(Debug, Clone)]

@@ -28,7 +28,7 @@ struct ProxyStatus {
     total_requests: u64,
     uptime_secs: i64,
     today_cost_usd: f64,
-    today_saved_usd: f64,
+    today_cache_savings_usd: f64,
     sessions: Vec<SessionInfo>,
     activity: Vec<ActivityItem>,
     events: Vec<EventItem>,
@@ -149,7 +149,7 @@ async fn fetch_status(client: &reqwest::Client, port: u16) -> anyhow::Result<Pro
     let total_requests = body["total_requests"].as_u64().unwrap_or(0);
     let uptime_secs = body["uptime_secs"].as_i64().unwrap_or(0);
     let today_cost_usd = body["today_cost_usd"].as_f64().unwrap_or(0.0);
-    let today_saved_usd = body["today_saved_usd"].as_f64().unwrap_or(0.0);
+    let today_cache_savings_usd = body["today_cache_savings_usd"].as_f64().unwrap_or(0.0);
 
     let sessions = body["sessions"]
         .as_array()
@@ -207,7 +207,7 @@ async fn fetch_status(client: &reqwest::Client, port: u16) -> anyhow::Result<Pro
         total_requests,
         uptime_secs,
         today_cost_usd,
-        today_saved_usd,
+        today_cache_savings_usd,
         sessions,
         activity,
         events,
@@ -309,7 +309,7 @@ fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
     let total_req = state.status.as_ref().map(|s| s.total_requests).unwrap_or(0);
     let session_count = state.status.as_ref().map(|s| s.session_count).unwrap_or(0);
     let today_cost = state.status.as_ref().map(|s| s.today_cost_usd).unwrap_or(0.0);
-    let today_saved = state.status.as_ref().map(|s| s.today_saved_usd).unwrap_or(0.0);
+    let today_saved = state.status.as_ref().map(|s| s.today_cache_savings_usd).unwrap_or(0.0);
 
     let mut spans = vec![
         Span::styled("  :", Style::default().fg(Color::White)),

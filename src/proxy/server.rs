@@ -705,11 +705,24 @@ async fn handle_status(
 
     let uptime_secs = (chrono::Utc::now() - s.started_at).num_seconds();
 
-    // Fetch spend summary for today
-    let (today_cost, today_saved) = if let Some(ref sl) = spend_log {
+    // Fetch spend summary for today. We used to expose
+    // `summary.total_saved_usd` as `today_saved_usd` — that field is merlint's
+    // own transformer-pruning estimate (tokens_saved × input_price), which is
+    // both a theoretical ceiling (doesn't account for cache-invalidation cost
+    // from body modification) and orders of magnitude smaller than the
+    // cache's real contribution. Replace it with today's cache-driven
+    // savings instead, so the banner tells a coherent story:
+    //   Today's Cost   $89.31
+    //   saved          $27.00 today from cache
+    // i.e. "you spent $89 today but would've spent $116 without the cache".
+    let (today_cost, today_cache_savings) = if let Some(ref sl) = spend_log {
         let log = sl.lock().await;
         if let Ok(summary) = log.summary_last_days(1) {
-            (summary.total_cost_usd, summary.total_saved_usd)
+            let savings = cost_calc.cache_savings(
+                "claude-sonnet-4-6",
+                summary.total_cache_read_tokens.max(0) as u64,
+            );
+            (summary.total_cost_usd, savings)
         } else {
             (0.0, 0.0)
         }
@@ -738,7 +751,7 @@ async fn handle_status(
         "total_requests": banner_total_requests,
         "session_count": sessions.len(),
         "today_cost_usd": today_cost,
-        "today_saved_usd": today_saved,
+        "today_cache_savings_usd": today_cache_savings,
         "sessions": sessions,
         "activity": activity,
         "events": events,

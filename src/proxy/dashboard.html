@@ -429,13 +429,20 @@ async function refresh() {
 
     // Today's cost with counting animation
     const todayCost = d.today_cost_usd || 0;
-    const todaySaved = d.today_saved_usd || 0;
+    // `today_cache_savings_usd` is the dollar value Anthropic's prompt
+    // cache saved vs sending today's cache_read_tokens at full input price.
+    // We used to display `today_saved_usd` (merlint's own pruning estimate)
+    // here, but that number was both tiny and misleading — theoretical
+    // savings that didn't account for cache-invalidation cost. Cache savings
+    // is the real number and pairs naturally with today's cost.
+    const todaySaved = d.today_cache_savings_usd || 0;
     const costEl = document.getElementById('today-cost');
     countUp(costEl, todayCost, 'cost', '$', '', 2);
 
     const savedEl = document.getElementById('today-saved');
     if (todaySaved > 0.01) {
-      savedEl.textContent = 'saved $'+todaySaved.toFixed(2);
+      savedEl.textContent = 'saved $'+todaySaved.toFixed(2)+' cache';
+      savedEl.title = 'Dollar value Anthropic\'s prompt cache saved today, priced against Sonnet 4. Without the cache, today would have cost $'+(todayCost+todaySaved).toFixed(2)+'.';
       savedEl.style.opacity = '1';
     } else {
       savedEl.style.opacity = '0';
