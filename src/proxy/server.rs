@@ -143,7 +143,7 @@ async fn handle_request(
 
     // Status endpoint — returns session stats as JSON
     if path == "/merlint/status" {
-        return Ok(handle_status(&store, &spend_log).await);
+        return Ok(handle_status(&store, &spend_log, &cost_calc).await);
     }
 
     // Dashboard endpoint — serves the web UI
@@ -522,7 +522,11 @@ async fn handle_spend_api(spend_log: &Option<SharedSpendLog>) -> Response<BoxBod
 }
 
 /// Handle the /merlint/status endpoint — returns session stats as JSON.
-async fn handle_status(store: &SharedSessionStore, spend_log: &Option<SharedSpendLog>) -> Response<BoxBody> {
+async fn handle_status(
+    store: &SharedSessionStore,
+    spend_log: &Option<SharedSpendLog>,
+    cost_calc: &CostCalculator,
+) -> Response<BoxBody> {
     let s = store.lock().await;
     let mut sessions = Vec::new();
 
@@ -614,6 +618,13 @@ async fn handle_status(store: &SharedSessionStore, spend_log: &Option<SharedSpen
 
         let last_activity = session.entries.last().map(|e| e.timestamp.to_rfc3339());
 
+        // Estimated cash value of the cache hits for this session. We don't
+        // know the exact model mix per historical row, so we price it against
+        // Sonnet 4 as a conservative default — Opus users will see a larger
+        // real-world savings and Haiku users a smaller one, but the order of
+        // magnitude is right and the display avoids over-promising.
+        let cache_savings_usd = cost_calc.cache_savings("claude-sonnet-4-6", total_cache_read);
+
         sessions.push(serde_json::json!({
             "key": key,
             "project": project.unwrap_or("unknown"),
@@ -633,6 +644,7 @@ async fn handle_status(store: &SharedSessionStore, spend_log: &Option<SharedSpen
             "cache_creation_tokens": total_cache_creation,
             "total_latency_ms": total_latency,
             "tokens_saved": tokens_saved,
+            "cache_savings_usd": cache_savings_usd,
             "tools_tracked": tools_tracked,
             "api_cache_hit_rate": api_cache_hit_rate,
             "pruning_suspended": pruning_suspended,

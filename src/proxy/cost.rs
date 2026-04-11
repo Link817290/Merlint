@@ -121,6 +121,25 @@ impl CostCalculator {
 
         CostResult { cost_usd, cost_saved_usd }
     }
+
+    /// Estimate the dollar value that Anthropic's prompt cache saved for a
+    /// given `cache_read` token count. Compared to sending the same tokens at
+    /// the full input price, cached tokens bill at `cache_read` rate (typically
+    /// 0.1×), so the per-token savings is `input_price - cache_read_price`.
+    ///
+    /// This is the "invisible" savings that the prompt cache provides —
+    /// separate from merlint's own tool-pruning savings which is tracked in
+    /// `cost_saved_usd`. Surfacing both lets the dashboard show users where
+    /// their real cost reduction comes from (almost always: the cache).
+    pub fn cache_savings(&self, model: &str, cache_read_tokens: u64) -> f64 {
+        if cache_read_tokens == 0 {
+            return 0.0;
+        }
+        let price = self.lookup(model);
+        let cache_read_price = price.cache_read.unwrap_or(price.input);
+        let per_token_savings = (price.input - cache_read_price).max(0.0);
+        (cache_read_tokens as f64) * per_token_savings / 1_000_000.0
+    }
 }
 
 fn parse_model_price(val: &serde_json::Value) -> Option<ModelPrice> {
@@ -161,5 +180,29 @@ mod tests {
         let result = calc.calculate("some-unknown-model-xyz", 1000000, 0, 0, 0, 0);
         // Fallback: 1M * 3.0/1M = 3.0
         assert!((result.cost_usd - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cache_savings_sonnet() {
+        let calc = CostCalculator::new();
+        // Sonnet: input $3/M, cache_read $0.3/M → savings $2.7/M
+        // 10M cache reads → $27 saved vs sending them at full input price
+        let saved = calc.cache_savings("claude-sonnet-4-6", 10_000_000);
+        assert!((saved - 27.0).abs() < 0.01, "expected ~$27, got {}", saved);
+    }
+
+    #[test]
+    fn test_cache_savings_zero_reads() {
+        let calc = CostCalculator::new();
+        assert_eq!(calc.cache_savings("claude-sonnet-4-6", 0), 0.0);
+    }
+
+    #[test]
+    fn test_cache_savings_unknown_model_uses_fallback() {
+        let calc = CostCalculator::new();
+        // Unknown model → fallback pricing (input $3/M, cache_read $0.3/M)
+        // 1M cache reads → $2.7 saved
+        let saved = calc.cache_savings("totally-fake-model", 1_000_000);
+        assert!(saved > 0.0, "fallback should still produce non-zero savings");
     }
 }

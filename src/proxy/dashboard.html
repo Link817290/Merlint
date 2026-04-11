@@ -69,6 +69,11 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
 .conv-detail span { color:var(--text); }
 .conv-detail .conv-cached { color:var(--yellow); }
 .conv-detail .conv-saved { color:var(--green); }
+.conv-detail .cache-ttl { font-family:monospace; font-size:11px; }
+.conv-detail .cache-ttl.cache-warm { color:var(--green); }
+.conv-detail .cache-ttl.cache-expiring { color:var(--yellow); }
+.conv-detail .cache-ttl.cache-cold { color:#ff7b72; }
+.conv-detail .cache-ttl.cache-idle { color:var(--dim); }
 .badge { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:600; }
 .badge.paused { background:rgba(63,185,80,.15); color:var(--green); }
 .badge.active { background:rgba(124,58,237,.15); color:var(--purple); }
@@ -147,8 +152,8 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
     <div class="stat-desc">Active Projects<br>Monitored workspaces</div>
   </div>
   <div class="stat-box">
-    <div class="stat-number green" id="total-saved">0</div>
-    <div class="stat-desc">Tokens Pruned<br>Reduced by merlint optimization</div>
+    <div class="stat-number green" id="total-saved">$0.00</div>
+    <div class="stat-desc">Cache Savings<br>Saved by Anthropic prompt cache</div>
   </div>
   <div class="stat-box">
     <div class="stat-number" id="today-cost">$0.00</div>
@@ -242,6 +247,40 @@ function countUp(el, target, key, prefix, suffix, decimals) {
 // State for incremental updates
 let prevEvents = [], prevActivity = [];
 
+// Compute how much of Anthropic's 5-minute prompt cache window is still
+// alive for a given session. Returns a short label + a color class.
+//
+//   never-active → session was preloaded from spend.db but hasn't seen a
+//                  live request yet → cache is almost certainly cold
+//   warm (N:SS)  → still inside the 5-min window from last_activity
+//   expiring     → < 1 minute left, nudge the user to send something
+//   cold         → window elapsed → next request will pay cache_creation
+const CACHE_TTL_SECS = 300;
+function cacheState(session) {
+  const ts = session.last_activity;
+  if (!ts) {
+    return { label: '—', cls: 'cache-idle', tip: 'no live activity yet' };
+  }
+  const last = Date.parse(ts);
+  if (isNaN(last)) {
+    return { label: '—', cls: 'cache-idle', tip: 'unparseable timestamp' };
+  }
+  const elapsed = (Date.now() - last) / 1000;
+  const remaining = Math.max(0, CACHE_TTL_SECS - elapsed);
+  if (remaining <= 0) {
+    return {
+      label: '🧊 cold',
+      cls: 'cache-cold',
+      tip: `Anthropic prompt cache expired ${Math.floor(elapsed - CACHE_TTL_SECS)}s ago. Next request will rebuild.`
+    };
+  }
+  const m = Math.floor(remaining / 60);
+  const s = Math.floor(remaining % 60);
+  const label = `⏱ ${m}:${String(s).padStart(2,'0')}`;
+  const cls = remaining < 60 ? 'cache-expiring' : 'cache-warm';
+  return { label, cls, tip: `Anthropic prompt cache stays warm for ${m}:${String(s).padStart(2,'0')} more. Send a message before then to avoid a ${'~'}77k rebuild (${'~'}$1.44 on Opus).` };
+}
+
 // Update a single text node if changed, with flash
 function updateText(parent, sel, val) {
   const el = parent.querySelector(sel);
@@ -294,6 +333,8 @@ function buildConvRows(sessions) {
     const totalPrompt = s.prompt_tokens || 0;
     const cp = totalPrompt > 0 ? Math.round(cacheRead / totalPrompt * 100) : 0;
     const saved = s.tokens_saved > 0 ? `<span class="conv-saved">-${fmt(s.tokens_saved)} saved</span>` : '';
+    const cs = cacheState(s);
+    const cacheCountdown = `<span class="cache-ttl ${cs.cls}" data-last-activity="${s.last_activity || ''}" title="${cs.tip}">${cs.label}</span>`;
     return `<div class="conv-item">
       <span class="conv-id">#${i+1} ${badge}${histBadge}</span>
       <div class="conv-detail">
@@ -302,6 +343,7 @@ function buildConvRows(sessions) {
         <span title="total prompt / completion">${fmt(totalPrompt)}p / ${fmt(s.completion_tokens||0)}c</span>
         <span class="conv-cached" title="${fmt(cacheRead)} of ${fmt(totalPrompt)} prompt tokens served from Anthropic's API cache">cache: ${fmt(cacheRead)} (${cp}%)</span>
         <span title="total latency">${latStr}</span>
+        ${cacheCountdown}
         ${saved}
       </div>
     </div>`;
@@ -363,8 +405,16 @@ async function refresh() {
     const projectCount = new Set(d.sessions.filter(s=>s.request_count>0).map(s=>s.project||s.key)).size;
     animateValue(document.getElementById('session-count'), projectCount.toString(), 'sessions');
 
-    const totalSaved = d.sessions.reduce((a,s) => a + (s.tokens_saved > 0 ? s.tokens_saved : 0), 0);
-    animateValue(document.getElementById('total-saved'), fmt(totalSaved), 'saved');
+    // Cache Savings headline number. This is the dollar value that
+    // Anthropic's prompt cache saved across all tracked sessions — by far
+    // the biggest source of real savings for users whose cache is warm.
+    // We intentionally surface this instead of "Tokens Pruned" (which for
+    // most Claude Code users stays at 0 because the transformer correctly
+    // suspends itself when the cache is doing its job).
+    const totalCacheSavings = d.sessions.reduce(
+      (a, s) => a + (s.cache_savings_usd || 0), 0
+    );
+    countUp(document.getElementById('total-saved'), totalCacheSavings, 'cache_savings', '$', '', 2);
 
     // Today's cost with counting animation
     const todayCost = d.today_cost_usd || 0;
@@ -468,6 +518,18 @@ async function refresh() {
                   if (spans[3]) spans[3].textContent = cp + '% cache';
                   const lt = s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms';
                   if (spans[4]) spans[4].textContent = lt;
+                  // spans[5] is the cache-ttl countdown span — recompute
+                  // every refresh so it ticks down even when the session's
+                  // other stats haven't changed.
+                  const ttlSpan = spans[5];
+                  if (ttlSpan && ttlSpan.classList.contains('cache-ttl')) {
+                    const cs = cacheState(s);
+                    ttlSpan.textContent = cs.label;
+                    ttlSpan.title = cs.tip;
+                    ttlSpan.setAttribute('data-last-activity', s.last_activity || '');
+                    ttlSpan.classList.remove('cache-warm','cache-expiring','cache-cold','cache-idle');
+                    ttlSpan.classList.add(cs.cls);
+                  }
                 }
               });
             }
@@ -502,6 +564,24 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 2000);
+
+// Tick all visible cache countdowns once a second. The full /status poll
+// runs every 2s, but the user expects the "4:32" label to count down like
+// a timer, not step by 2. We keep a `data-last-activity` attribute on each
+// ttl span so this cheap tick can recompute without hitting the network.
+setInterval(() => {
+  document.querySelectorAll('.cache-ttl[data-last-activity]').forEach(el => {
+    const ts = el.getAttribute('data-last-activity');
+    if (!ts) return;
+    const cs = cacheState({ last_activity: ts });
+    if (el.textContent !== cs.label) {
+      el.textContent = cs.label;
+      el.title = cs.tip;
+      el.classList.remove('cache-warm','cache-expiring','cache-cold','cache-idle');
+      el.classList.add(cs.cls);
+    }
+  });
+}, 1000);
 </script>
 </body>
 </html>
