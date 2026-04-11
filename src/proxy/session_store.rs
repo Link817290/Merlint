@@ -333,10 +333,6 @@ fn system_prompt_hash(body: &serde_json::Value) -> Option<u64> {
     }
 
     if !project_fingerprint.is_empty() {
-        // Also mix in model name to distinguish providers
-        if let Some(model) = body.get("model").and_then(|v| v.as_str()) {
-            project_fingerprint.push_str(model);
-        }
         project_fingerprint.hash(&mut hasher);
         return Some(hasher.finish());
     }

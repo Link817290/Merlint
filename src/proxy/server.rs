@@ -129,7 +129,7 @@ async fn handle_request(
 
     // Status endpoint — returns session stats as JSON
     if path == "/merlint/status" {
-        return Ok(handle_status(&store).await);
+        return Ok(handle_status(&store, &spend_log).await);
     }
 
     // Dashboard endpoint — serves the web UI
@@ -145,8 +145,10 @@ async fn handle_request(
     let body_bytes = req.collect().await?.to_bytes();
 
     let provider = detect_provider(&path, &headers);
-    let is_chat = path.contains("/chat/completions") || path.contains("/messages")
-        || path.contains("/completions");
+    let is_chat = (path.contains("/chat/completions") || path.contains("/messages")
+        || path.contains("/completions"))
+        && !path.contains("/count_tokens")
+        && !path.contains("/batches");
 
     // Extract session key for multi-session routing
     let session_key = if is_chat {
@@ -463,7 +465,7 @@ async fn handle_spend_api(spend_log: &Option<SharedSpendLog>) -> Response<BoxBod
 }
 
 /// Handle the /merlint/status endpoint — returns session stats as JSON.
-async fn handle_status(store: &SharedSessionStore) -> Response<BoxBody> {
+async fn handle_status(store: &SharedSessionStore, spend_log: &Option<SharedSpendLog>) -> Response<BoxBody> {
     let s = store.lock().await;
     let mut sessions = Vec::new();
 
@@ -509,6 +511,13 @@ async fn handle_status(store: &SharedSessionStore) -> Response<BoxBody> {
         }));
     }
 
+    // Sort sessions: most active first
+    sessions.sort_by(|a, b| {
+        let ra = a["request_count"].as_u64().unwrap_or(0);
+        let rb = b["request_count"].as_u64().unwrap_or(0);
+        rb.cmp(&ra)
+    });
+
     // Recent activity log
     let activity: Vec<serde_json::Value> = s.activity_log.iter().rev().take(20).map(|a| {
         serde_json::json!({
@@ -538,11 +547,25 @@ async fn handle_status(store: &SharedSessionStore) -> Response<BoxBody> {
 
     let uptime_secs = (chrono::Utc::now() - s.started_at).num_seconds();
 
+    // Fetch spend summary for today
+    let (today_cost, today_saved) = if let Some(ref sl) = spend_log {
+        let log = sl.lock().await;
+        if let Ok(summary) = log.summary_last_days(1) {
+            (summary.total_cost_usd, summary.total_saved_usd)
+        } else {
+            (0.0, 0.0)
+        }
+    } else {
+        (0.0, 0.0)
+    };
+
     let body = serde_json::json!({
         "status": "running",
         "uptime_secs": uptime_secs,
         "total_requests": s.total_requests,
         "session_count": sessions.len(),
+        "today_cost_usd": today_cost,
+        "today_saved_usd": today_saved,
         "sessions": sessions,
         "activity": activity,
         "events": events,

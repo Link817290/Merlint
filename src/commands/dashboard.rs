@@ -24,6 +24,8 @@ struct ProxyStatus {
     session_count: usize,
     total_requests: u64,
     uptime_secs: i64,
+    today_cost_usd: f64,
+    today_saved_usd: f64,
     sessions: Vec<SessionInfo>,
     activity: Vec<ActivityItem>,
     events: Vec<EventItem>,
@@ -129,6 +131,8 @@ async fn fetch_status(client: &reqwest::Client, port: u16) -> anyhow::Result<Pro
     let session_count = body["session_count"].as_u64().unwrap_or(0) as usize;
     let total_requests = body["total_requests"].as_u64().unwrap_or(0);
     let uptime_secs = body["uptime_secs"].as_i64().unwrap_or(0);
+    let today_cost_usd = body["today_cost_usd"].as_f64().unwrap_or(0.0);
+    let today_saved_usd = body["today_saved_usd"].as_f64().unwrap_or(0.0);
 
     let sessions = body["sessions"]
         .as_array()
@@ -185,6 +189,8 @@ async fn fetch_status(client: &reqwest::Client, port: u16) -> anyhow::Result<Pro
         session_count,
         total_requests,
         uptime_secs,
+        today_cost_usd,
+        today_saved_usd,
         sessions,
         activity,
         events,
@@ -242,8 +248,10 @@ fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
     let uptime = state.status.as_ref().map(|s| format_uptime(s.uptime_secs)).unwrap_or_default();
     let total_req = state.status.as_ref().map(|s| s.total_requests).unwrap_or(0);
     let session_count = state.status.as_ref().map(|s| s.session_count).unwrap_or(0);
+    let today_cost = state.status.as_ref().map(|s| s.today_cost_usd).unwrap_or(0.0);
+    let today_saved = state.status.as_ref().map(|s| s.today_saved_usd).unwrap_or(0.0);
 
-    let header_line = Line::from(vec![
+    let mut spans = vec![
         Span::styled("  :", Style::default().fg(Color::White)),
         Span::styled(format!("{}", state.port), Style::default().fg(Color::Yellow)),
         Span::raw("  │  "),
@@ -252,9 +260,20 @@ fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
         Span::styled(format!("{} sessions", session_count), Style::default().fg(Color::White)),
         Span::raw("  │  "),
         Span::styled(format!("{} reqs", total_req), Style::default().fg(Color::White)),
-        Span::raw("  │  "),
-        Span::styled(uptime, Style::default().fg(Color::DarkGray)),
-    ]);
+    ];
+
+    if today_cost > 0.0 {
+        spans.push(Span::raw("  │  "));
+        spans.push(Span::styled(format!("${:.2}", today_cost), Style::default().fg(Color::Yellow)));
+        if today_saved > 0.01 {
+            spans.push(Span::styled(format!(" (-${:.2})", today_saved), Style::default().fg(Color::Green)));
+        }
+    }
+
+    spans.push(Span::raw("  │  "));
+    spans.push(Span::styled(uptime, Style::default().fg(Color::DarkGray)));
+
+    let header_line = Line::from(spans);
 
     let header_widget = Paragraph::new(header_line)
         .block(header)
@@ -377,9 +396,20 @@ fn render_body(f: &mut Frame, area: Rect, status: &ProxyStatus) {
 }
 
 fn render_sessions(f: &mut Frame, area: Rect, status: &ProxyStatus) {
-    let count = status.sessions.len().min(4);
+    // Filter out empty sessions, then cap to what fits
+    let active: Vec<&SessionInfo> = status.sessions.iter()
+        .filter(|s| s.request_count > 0)
+        .collect();
+    let max_cards = (area.height as usize / 5).max(1);
+    let count = active.len().min(max_cards);
+    if count == 0 {
+        let msg = Paragraph::new("  No active sessions yet...")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(msg, area);
+        return;
+    }
     let constraints: Vec<Constraint> = (0..count)
-        .map(|_| Constraint::Min(6))
+        .map(|_| Constraint::Min(5))
         .collect();
 
     let session_chunks = Layout::default()
@@ -387,7 +417,7 @@ fn render_sessions(f: &mut Frame, area: Rect, status: &ProxyStatus) {
         .constraints(constraints)
         .split(area);
 
-    for (i, session) in status.sessions.iter().take(4).enumerate() {
+    for (i, session) in active.iter().take(count).enumerate() {
         render_session_card(f, session_chunks[i], session);
     }
 }
