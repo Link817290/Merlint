@@ -717,10 +717,25 @@ async fn handle_status(
         (0.0, 0.0)
     };
 
+    // Banner-level "Total Requests" sums the lifetime request counts of the
+    // currently-tracked chat sessions (live + historical, excluding the
+    // __background__/__non_chat__ buckets the loop already skipped). This
+    // matches the per-project card's own "Requests" number and the other
+    // cumulative banner metrics (Cache Savings). Previously we exposed
+    // `SessionStore.total_requests` — a since-restart raw HTTP counter —
+    // which contradicted the project card (e.g. banner "1" vs card "171")
+    // and mixed three time scopes into one row.
+    //
+    // Today's Cost stays explicitly "today" because its label advertises it.
+    let banner_total_requests: u64 = sessions
+        .iter()
+        .filter_map(|s| s.get("request_count").and_then(|v| v.as_u64()))
+        .sum();
+
     let body = serde_json::json!({
         "status": "running",
         "uptime_secs": uptime_secs,
-        "total_requests": s.total_requests,
+        "total_requests": banner_total_requests,
         "session_count": sessions.len(),
         "today_cost_usd": today_cost,
         "today_saved_usd": today_saved,
