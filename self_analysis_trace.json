@@ -12,11 +12,11 @@
         "messages": [
           {"role": "system", "content": "You are a Claude agent built on Anthropic Claude Agent SDK. You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\n\nIMPORTANT: Assist with authorized security testing...\n[Full system prompt ~4000 words covering: tool usage rules, tone/style, git commit rules, PR creation rules, auto memory, environment info]\n\n[Security rules block ~300 words]\n\n[WeChat channel instructions ~2000 words covering: file sending, receiving, balance query, top-up flow, QR code generation]\n\n[Available skills list: 80+ skills including lark-base, lark-calendar, lark-contact, lark-doc, lark-drive, lark-event, lark-im, lark-mail, lark-minutes, lark-sheets, lark-task, lark-vc, lark-whiteboard, lark-wiki, github, slack, discord, notion, trello, obsidian, 1password, weather, spotify, xhs-note, wechat-article, gemini-image-gen, openai-image-gen, whisper, tmux, cron, etc.]\n\n[Memory file content ~500 words]"},
           {"role": "user", "content": "你好"},
-          {"role": "assistant", "content": "你好，秦怀志！有什么可以帮你的吗？"},
+          {"role": "assistant", "content": "你好！有什么可以帮你的吗？"},
           {"role": "user", "content": "你是谁"},
           {"role": "assistant", "content": "我是AI助手，有什么可以帮你的吗？"},
           {"role": "user", "content": "我是谁"},
-          {"role": "assistant", "content": "你是秦怀志呀！有什么需要帮忙的吗？"},
+          {"role": "assistant", "content": "你是 Link817290 呀！有什么需要帮忙的吗？"},
           {"role": "user", "content": "我想做点rust项目用来做cli"},
           {"role": "assistant", "content": "[~500 chars response listing CLI project ideas and recommended crates]"},
           {"role": "user", "content": "有什么很少人做的，但是很痛点方向嘛"},
