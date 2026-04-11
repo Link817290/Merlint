@@ -331,8 +331,16 @@ fn render_header(f: &mut Frame, area: Rect, state: &DashboardState) {
             Style::default().fg(Color::Yellow)
         };
         spans.push(Span::styled(format!("${:.2}", today_cost), cost_style));
+        // Label the cache savings explicitly so "$102 (-$117)" isn't
+        // ambiguous — this is NOT a net amount, it's the dollar value
+        // Anthropic's prompt cache saved today versus sending the same
+        // tokens at full input price. Mirrors the HTML dashboard's
+        // "saved $X cache" label.
         if today_saved > 0.01 {
-            spans.push(Span::styled(format!(" (-${:.2})", today_saved), Style::default().fg(Color::Green)));
+            spans.push(Span::styled(
+                format!(" cache -${:.2}", today_saved),
+                Style::default().fg(Color::Green),
+            ));
         }
     }
 
@@ -544,6 +552,13 @@ fn render_project_card(f: &mut Frame, area: Rect, proj_path: &str, sessions: &[&
 
     let avg_latency = if total_reqs > 0 { total_latency / total_reqs } else { 0 };
 
+    // Dollar value Anthropic's prompt cache saved for this project, priced
+    // against Sonnet 4 for a conservative default. Same formula the HTML
+    // dashboard uses. This is the headline savings metric — the merlint
+    // transformer's own pruning (shown below as "Pruned") is typically
+    // 100-1000x smaller for cache-hot sessions.
+    let cache_savings_usd = (total_cache_read as f64) * 2.7 / 1_000_000.0;
+
     let stats = vec![
         Line::from(vec![
             Span::styled("  Reqs:   ", Style::default().fg(Color::DarkGray)),
@@ -572,10 +587,18 @@ fn render_project_card(f: &mut Frame, area: Rect, proj_path: &str, sessions: &[&
             ),
         ]),
         Line::from(vec![
+            Span::styled("  Saved:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("${:.2}", cache_savings_usd),
+                Style::default().fg(Color::Green).bold(),
+            ),
+            Span::styled(" cache", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
             Span::styled("  Pruned: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("~{}", format_tokens(total_saved.max(0) as u64)),
-                Style::default().fg(Color::Green).bold(),
+                Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
                 format!("    {} tools", total_tools),
