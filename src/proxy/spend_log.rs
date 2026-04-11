@@ -41,6 +41,12 @@ pub struct HistoricalSummary {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub cache_read_tokens: u64,
+    /// Sum of `cache_creation_input_tokens` across historical entries. Needed
+    /// so the dashboard can compute a truthful cache hit rate after a restart
+    /// (total_prompt = fresh + cache_read + cache_creation). Without this, any
+    /// historical cache write is silently dropped and the displayed hit rate
+    /// over-reports by the fraction of writes to the total input.
+    pub cache_creation_tokens: u64,
     pub total_latency_ms: u64,
     pub cost_usd: f64,
     pub tokens_saved: i64,
@@ -306,6 +312,7 @@ impl SpendLog {
                 COALESCE(SUM(prompt_tokens), 0),
                 COALESCE(SUM(completion_tokens), 0),
                 COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0),
                 COALESCE(SUM(latency_ms), 0),
                 COALESCE(SUM(cost_usd), 0.0),
                 COALESCE(SUM(tokens_saved), 0),
@@ -325,11 +332,12 @@ impl SpendLog {
                     prompt_tokens: row.get::<_, i64>(3)? as u64,
                     completion_tokens: row.get::<_, i64>(4)? as u64,
                     cache_read_tokens: row.get::<_, i64>(5)? as u64,
-                    total_latency_ms: row.get::<_, i64>(6)? as u64,
-                    cost_usd: row.get(7)?,
-                    tokens_saved: row.get(8)?,
+                    cache_creation_tokens: row.get::<_, i64>(6)? as u64,
+                    total_latency_ms: row.get::<_, i64>(7)? as u64,
+                    cost_usd: row.get(8)?,
+                    tokens_saved: row.get(9)?,
                 },
-                last_activity: row.get(9)?,
+                last_activity: row.get(10)?,
             }),
         )?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
@@ -345,6 +353,7 @@ impl SpendLog {
                 COALESCE(SUM(prompt_tokens), 0),
                 COALESCE(SUM(completion_tokens), 0),
                 COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0),
                 COALESCE(SUM(latency_ms), 0),
                 COALESCE(SUM(cost_usd), 0.0),
                 COALESCE(SUM(tokens_saved), 0)
@@ -356,9 +365,10 @@ impl SpendLog {
                 prompt_tokens: row.get::<_, i64>(1)? as u64,
                 completion_tokens: row.get::<_, i64>(2)? as u64,
                 cache_read_tokens: row.get::<_, i64>(3)? as u64,
-                total_latency_ms: row.get::<_, i64>(4)? as u64,
-                cost_usd: row.get(5)?,
-                tokens_saved: row.get(6)?,
+                cache_creation_tokens: row.get::<_, i64>(4)? as u64,
+                total_latency_ms: row.get::<_, i64>(5)? as u64,
+                cost_usd: row.get(6)?,
+                tokens_saved: row.get(7)?,
             }),
         ).map_err(Into::into)
     }

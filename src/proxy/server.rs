@@ -556,29 +556,36 @@ async fn handle_status(store: &SharedSessionStore, spend_log: &Option<SharedSpen
             .sum();
         let live_latency: u64 = session.entries.iter().map(|e| e.latency_ms).sum();
 
-        // Merge with stats persisted from prior proxy runs.
-        // NB: HistoricalSummary doesn't currently track cache_creation
-        // separately (legacy schema). For now we treat historical
-        // prompt_tokens as the fresh portion and historical cache_read
-        // as already-counted cache reads — same convention as live.
-        let (hist_requests, hist_fresh_input, hist_completion, hist_cache_read, hist_latency, hist_saved) =
-            match historical {
-                Some(h) => (
-                    h.request_count,
-                    h.prompt_tokens,
-                    h.completion_tokens,
-                    h.cache_read_tokens,
-                    h.total_latency_ms,
-                    h.tokens_saved,
-                ),
-                None => (0, 0, 0, 0, 0, 0),
-            };
+        // Merge with stats persisted from prior proxy runs. All four input
+        // token buckets (fresh, cache_read, cache_creation) are tracked in
+        // HistoricalSummary so the post-restart hit rate matches what the
+        // live counter would have shown before the restart.
+        let (
+            hist_requests,
+            hist_fresh_input,
+            hist_completion,
+            hist_cache_read,
+            hist_cache_creation,
+            hist_latency,
+            hist_saved,
+        ) = match historical {
+            Some(h) => (
+                h.request_count,
+                h.prompt_tokens,
+                h.completion_tokens,
+                h.cache_read_tokens,
+                h.cache_creation_tokens,
+                h.total_latency_ms,
+                h.tokens_saved,
+            ),
+            None => (0, 0, 0, 0, 0, 0, 0),
+        };
 
         let total_requests = live_requests + hist_requests;
         let total_fresh_input = live_fresh_input + hist_fresh_input;
         let total_completion = live_completion + hist_completion;
         let total_cache_read = live_cache_read + hist_cache_read;
-        let total_cache_creation = live_cache_creation; // historical not tracked separately
+        let total_cache_creation = live_cache_creation + hist_cache_creation;
         let total_latency = live_latency + hist_latency;
 
         // True prompt = fresh input + cache reads + cache writes.

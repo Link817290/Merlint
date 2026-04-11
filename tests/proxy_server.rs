@@ -510,7 +510,9 @@ async fn test_session_stats_persist_across_restart() {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 cache_read_tokens: 10,
-                cache_creation_tokens: 0,
+                // First request writes the cache, the other two read it.
+                // Summed historical cache_creation must survive the preload.
+                cache_creation_tokens: if i == 0 { 90 } else { 0 },
                 cost_usd: 0.01,
                 cost_saved_usd: 0.0,
                 tokens_saved: 5,
@@ -594,6 +596,10 @@ async fn test_session_stats_persist_across_restart() {
     assert_eq!(h1.prompt_tokens, 300);
     assert_eq!(h1.completion_tokens, 150);
     assert_eq!(h1.cache_read_tokens, 30);
+    assert_eq!(
+        h1.cache_creation_tokens, 90,
+        "historical cache_creation must be summed from spend_log, not dropped"
+    );
     assert_eq!(h1.total_latency_ms, 750);
     assert_eq!(h1.tokens_saved, 15);
 
@@ -618,6 +624,7 @@ async fn test_session_stats_persist_across_restart() {
         prompt_tokens: 1,
         completion_tokens: 2,
         cache_read_tokens: 3,
+        cache_creation_tokens: 7,
         total_latency_ms: 4,
         cost_usd: 0.5,
         tokens_saved: 6,
