@@ -15,6 +15,10 @@ pub struct SpendEntry {
     pub request_id: String,
     pub timestamp: String,
     pub session_key: String,
+    /// Absolute working directory for the project this request belongs to,
+    /// when extract_project_path succeeded. Empty for legacy rows or for
+    /// background/unidentified requests.
+    pub project_path: String,
     pub model: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -28,13 +32,43 @@ pub struct SpendEntry {
     pub status: u16,
 }
 
+/// Cumulative stats for a single session_key, aggregated across every entry
+/// in the spend_log table. Loaded once when a SessionSlot is created so the
+/// dashboard can show lifetime totals without losing the per-run live counts.
+#[derive(Debug, Clone, Default)]
+pub struct HistoricalSummary {
+    pub request_count: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_latency_ms: u64,
+    pub cost_usd: f64,
+    pub tokens_saved: i64,
+}
+
+/// One row from `recent_sessions`: everything needed to build an inactive
+/// SessionSlot at proxy startup.
+#[derive(Debug, Clone)]
+pub struct RecentSession {
+    pub session_key: String,
+    pub project_path: String,
+    pub summary: HistoricalSummary,
+    pub last_activity: String,
+}
+
 impl SpendLog {
     pub fn open() -> Result<Self> {
-        let db_path = Self::db_path()?;
-        if let Some(parent) = db_path.parent() {
+        Self::open_at(&Self::db_path()?)
+    }
+
+    /// Open a SpendLog at an explicit filesystem path. Used by tests to
+    /// isolate spend data from the user's real ~/.merlint/spend.db without
+    /// having to mutate process-wide env vars.
+    pub fn open_at(path: &std::path::Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&db_path)?;
+        let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         let db = Self { conn };
         db.init_schema()?;
@@ -54,6 +88,7 @@ impl SpendLog {
                 request_id           TEXT NOT NULL,
                 timestamp            TEXT NOT NULL,
                 session_key          TEXT NOT NULL,
+                project_path         TEXT NOT NULL DEFAULT '',
                 model                TEXT NOT NULL DEFAULT '',
                 prompt_tokens        INTEGER NOT NULL DEFAULT 0,
                 completion_tokens    INTEGER NOT NULL DEFAULT 0,
@@ -87,23 +122,46 @@ impl SpendLog {
             CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_spend(date);
             CREATE INDEX IF NOT EXISTS idx_daily_session ON daily_spend(session_key);"
         )?;
+
+        // Add project_path column to databases that pre-date this migration.
+        // SQLite errors out if the column already exists, so we first check
+        // PRAGMA table_info and only ALTER when absent.
+        if !self.column_exists("spend_log", "project_path")? {
+            self.conn.execute(
+                "ALTER TABLE spend_log ADD COLUMN project_path TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         Ok(())
+    }
+
+    fn column_exists(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({})", table))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Insert a spend log entry and update the daily aggregation.
     pub fn log(&self, entry: &SpendEntry) -> Result<()> {
         self.conn.execute(
             "INSERT INTO spend_log (
-                request_id, timestamp, session_key, model,
+                request_id, timestamp, session_key, project_path, model,
                 prompt_tokens, completion_tokens,
                 cache_read_tokens, cache_creation_tokens,
                 cost_usd, cost_saved_usd, tokens_saved,
                 latency_ms, tools_called, status
-            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 entry.request_id,
                 entry.timestamp,
                 entry.session_key,
+                entry.project_path,
                 entry.model,
                 entry.prompt_tokens as i64,
                 entry.completion_tokens as i64,
@@ -233,6 +291,76 @@ impl SpendLog {
             }),
         )?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// List all distinct session_keys with activity in the last `days` days,
+    /// along with their project_path and cumulative stats. Used at proxy
+    /// startup to pre-populate the dashboard with recent sessions before
+    /// any new request arrives.
+    pub fn recent_sessions(&self, days: u32) -> Result<Vec<RecentSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                session_key,
+                MAX(project_path) as project_path,
+                COUNT(*) as req,
+                COALESCE(SUM(prompt_tokens), 0),
+                COALESCE(SUM(completion_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(latency_ms), 0),
+                COALESCE(SUM(cost_usd), 0.0),
+                COALESCE(SUM(tokens_saved), 0),
+                MAX(timestamp) as last_ts
+             FROM spend_log
+             WHERE timestamp >= datetime('now', ?1)
+             GROUP BY session_key
+             ORDER BY last_ts DESC"
+        )?;
+        let rows = stmt.query_map(
+            params![format!("-{} days", days)],
+            |row| Ok(RecentSession {
+                session_key: row.get(0)?,
+                project_path: row.get::<_, String>(1).unwrap_or_default(),
+                summary: HistoricalSummary {
+                    request_count: row.get::<_, i64>(2)? as u64,
+                    prompt_tokens: row.get::<_, i64>(3)? as u64,
+                    completion_tokens: row.get::<_, i64>(4)? as u64,
+                    cache_read_tokens: row.get::<_, i64>(5)? as u64,
+                    total_latency_ms: row.get::<_, i64>(6)? as u64,
+                    cost_usd: row.get(7)?,
+                    tokens_saved: row.get(8)?,
+                },
+                last_activity: row.get(9)?,
+            }),
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get cumulative historical stats for a single session_key. Returns
+    /// zeros if the session has no prior entries. Used on slot creation so
+    /// the dashboard can surface carried-over stats after a proxy restart.
+    pub fn session_history(&self, session_key: &str) -> Result<HistoricalSummary> {
+        self.conn.query_row(
+            "SELECT
+                COUNT(*) as req,
+                COALESCE(SUM(prompt_tokens), 0),
+                COALESCE(SUM(completion_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(latency_ms), 0),
+                COALESCE(SUM(cost_usd), 0.0),
+                COALESCE(SUM(tokens_saved), 0)
+             FROM spend_log
+             WHERE session_key = ?1",
+            params![session_key],
+            |row| Ok(HistoricalSummary {
+                request_count: row.get::<_, i64>(0)? as u64,
+                prompt_tokens: row.get::<_, i64>(1)? as u64,
+                completion_tokens: row.get::<_, i64>(2)? as u64,
+                cache_read_tokens: row.get::<_, i64>(3)? as u64,
+                total_latency_ms: row.get::<_, i64>(4)? as u64,
+                cost_usd: row.get(5)?,
+                tokens_saved: row.get(6)?,
+            }),
+        ).map_err(Into::into)
     }
 
     /// Get tool frequency for a specific session_key (project).

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::models::trace::TraceSession;
-use super::spend_log::SpendLog;
+use super::spend_log::{HistoricalSummary, SpendLog};
 use super::transformer::{new_shared_transformer, SharedTransformer};
 
 /// A recent activity log entry.
@@ -45,6 +45,7 @@ pub struct SessionSnapshot<'a> {
     pub session: &'a TraceSession,
     pub transformer: Option<&'a SharedTransformer>,
     pub project_path: Option<&'a str>,
+    pub historical: Option<&'a HistoricalSummary>,
 }
 
 /// Manages multiple concurrent sessions, each with its own trace and transformer.
@@ -76,6 +77,10 @@ pub struct SessionSlot {
     pub transformer: Option<SharedTransformer>,
     /// Human-readable project path (e.g. "/workspace/myproject")
     pub project_path: Option<String>,
+    /// Historical totals for this session_key loaded from spend.db at slot
+    /// creation time. Lets stats persist across proxy restarts — every time
+    /// a conversation resumes, its lifetime stats come with it.
+    pub historical: Option<HistoricalSummary>,
 }
 
 impl SessionStore {
@@ -147,10 +152,14 @@ impl SessionStore {
             let mut session = TraceSession::new();
             session.meta_session_key = Some(key.to_string());
 
+            // Transformer warm-start still opens its own spend.db — it only
+            // runs when optimize=true, which is off for all tests, so there's
+            // no cross-test contamination. Historical summary is populated
+            // separately via attach_historical() from the server layer,
+            // which is what tests bypass when passing spend_log=None.
             let transformer = if self.optimize {
                 let tx = new_shared_transformer();
 
-                // Try per-project warm-start first (most specific)
                 let mut loaded_project = false;
                 if key.starts_with("sys-") {
                     if let Ok(db) = SpendLog::open() {
@@ -168,7 +177,6 @@ impl SessionStore {
                     }
                 }
 
-                // Fall back to global history if no project-specific data
                 if !loaded_project {
                     let merged = self.merged_history();
                     if let Some((ref freq, total)) = merged {
@@ -186,6 +194,7 @@ impl SessionStore {
                 session,
                 transformer,
                 project_path,
+                historical: None,
             });
         }
         (self.sessions.get_mut(key).unwrap(), is_new)
@@ -261,12 +270,69 @@ impl SessionStore {
                 session: &s.session,
                 transformer: s.transformer.as_ref(),
                 project_path: s.project_path.as_deref(),
+                historical: s.historical.as_ref(),
             })
             .collect()
     }
 
     pub fn session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    /// Pre-populate the store with sessions previously logged to `db`
+    /// within the last `days` days. Only sessions that actually routed
+    /// through the proxy (and thus appear in spend_log) will be loaded —
+    /// anything that never went through the proxy is intentionally skipped
+    /// because we have no data for it and can't track it going forward.
+    ///
+    /// Rows with no `project_path` are also skipped: those are legacy
+    /// entries written before the project_path column was added, so we
+    /// can't attribute them to any specific project card. They remain in
+    /// spend.db and still count toward total spend / `merlint report`,
+    /// but they don't pollute the per-project dashboard view.
+    ///
+    /// Skips the internal `__background__` / `__non_chat__` buckets so the
+    /// dashboard's project view stays clean. Returns the number of slots
+    /// that were inserted.
+    pub fn preload_recent_sessions(&mut self, db: &SpendLog, days: u32) -> usize {
+        let Ok(rows) = db.recent_sessions(days) else { return 0 };
+        let mut inserted = 0;
+        for row in rows {
+            if row.session_key == BACKGROUND_SESSION_KEY || row.session_key == "__non_chat__" {
+                continue;
+            }
+            if row.project_path.is_empty() {
+                continue;
+            }
+            if self.sessions.contains_key(&row.session_key) {
+                continue;
+            }
+            let mut session = TraceSession::new();
+            session.meta_session_key = Some(row.session_key.clone());
+            self.sessions.insert(
+                row.session_key.clone(),
+                SessionSlot {
+                    session,
+                    transformer: None,
+                    project_path: Some(row.project_path.clone()),
+                    historical: Some(row.summary),
+                },
+            );
+            inserted += 1;
+        }
+        inserted
+    }
+
+    /// Attach historical totals to an existing slot. Called from the server
+    /// layer after `get_or_create_with_project` when spend_log is configured,
+    /// so the dashboard picks up lifetime stats for resumed conversations.
+    /// No-op if the slot already has historical data or doesn't exist.
+    pub fn attach_historical(&mut self, key: &str, summary: HistoricalSummary) {
+        if let Some(slot) = self.sessions.get_mut(key) {
+            if slot.historical.is_none() && summary.request_count > 0 {
+                slot.historical = Some(summary);
+            }
+        }
     }
 }
 
@@ -276,17 +342,32 @@ pub fn new_session_store(optimize: bool) -> SharedSessionStore {
     Arc::new(Mutex::new(SessionStore::new(optimize)))
 }
 
+/// Shared bucket for short/auxiliary requests that don't belong to any
+/// identifiable project (e.g. Claude Code's Haiku title-generation calls or
+/// quota probes). Hidden from the dashboard project list.
+pub const BACKGROUND_SESSION_KEY: &str = "__background__";
+
+/// System prompts shorter than this, without a working-directory marker, are
+/// routed to the background bucket. Claude Code main conversations carry
+/// ~10–20 KB of system text, auxiliary Haiku requests are well under 1 KB.
+const SHORT_SYSTEM_THRESHOLD: usize = 2000;
+
 /// Extract a session key from an API request.
 ///
 /// Priority:
 /// 1. `X-Merlint-Session` header (explicit)
-/// 2. Hash of the system prompt (implicit — unique per project)
-/// 3. "default" fallback
+/// 2. If the system prompt contains a working-directory marker, hash that
+///    path so every request from the same project collapses into one session.
+/// 3. If the system prompt is short or missing, route to the shared
+///    `__background__` bucket — these are Haiku title generation, quota
+///    probes, etc. and shouldn't spawn fake "unknown" projects.
+/// 4. Long system prompt without any project marker — fall back to hashing a
+///    stable mid-range window so genuinely different agents stay separate.
 pub fn extract_session_key(
     headers: &hyper::HeaderMap,
     body: &[u8],
 ) -> String {
-    // 1. Explicit header
+    // 1. Explicit header override
     if let Some(val) = headers.get("x-merlint-session") {
         if let Ok(s) = val.to_str() {
             if !s.is_empty() {
@@ -295,122 +376,183 @@ pub fn extract_session_key(
         }
     }
 
-    // 2. Hash system prompt from request body
-    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(body) {
-        if let Some(hash) = system_prompt_hash(&val) {
-            return format!("sys-{:016x}", hash);
-        }
+    let Ok(val) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return BACKGROUND_SESSION_KEY.to_string();
+    };
+    let text = extract_system_text(&val).unwrap_or_default();
+
+    // 2. Explicit project marker — compose a stable per-conversation key
+    //    from the working directory AND a fingerprint of the conversation
+    //    history. Every follow-up turn in the same conversation resends the
+    //    same messages[0], so hashing it gives a stable id that's distinct
+    //    per Claude Code window / Codex run, while still grouping under the
+    //    same project_path in the dashboard.
+    if let Some(path) = find_working_dir(&text) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut hasher);
+        let path_hash = hasher.finish();
+
+        let conv_hash = conversation_fingerprint(&val);
+        return match conv_hash {
+            Some(c) => format!("sys-{:016x}-{:016x}", path_hash, c),
+            None => format!("sys-{:016x}", path_hash),
+        };
     }
 
-    // 3. Fallback
-    "default".to_string()
-}
-
-/// Hash the system prompt content to derive a stable session key.
-///
-/// Challenge: LLM agent frameworks (Claude Code, etc.) dynamically
-/// modify the system prompt by loading skills, channel instructions,
-/// and context. We need a hash that's stable across these changes
-/// but unique per project/workspace.
-///
-/// Strategy:
-/// 1. Try to extract project-identifying markers (working directory,
-///    CLAUDE.md content) — these are stable per-project.
-/// 2. Fall back to hashing a mid-range window (chars 200..2200) that
-///    captures project context but skips the generic framework prefix
-///    and the variable skill/channel suffix.
-fn system_prompt_hash(body: &serde_json::Value) -> Option<u64> {
-    let text = extract_system_text(body)?;
-    if text.is_empty() {
-        return None;
+    // 3. Short / missing system → background bucket.
+    if text.len() < SHORT_SYSTEM_THRESHOLD {
+        return BACKGROUND_SESSION_KEY.to_string();
     }
+
+    // 4. Long system prompt, no explicit marker — hash a stable window.
+    //    Skip the first 200 chars (generic framework prefix) and the tail
+    //    (where skills/channels get appended) so small variations between
+    //    turns don't shatter the session.
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-
-    // Strategy 1: Look for explicit project markers
-    // Claude Code includes "Primary working directory: /path/to/project"
-    // and CLAUDE.md content. These are stable per-project.
-    let mut project_fingerprint = String::new();
-
-    // Extract working directory
-    for marker in &["working directory:", "Working directory:", "cwd:"] {
-        if let Some(pos) = text.find(marker) {
-            let start = pos + marker.len();
-            let end = text[start..].find('\n').map(|i| start + i).unwrap_or(text.len().min(start + 200));
-            project_fingerprint.push_str(text[start..end].trim());
-            break;
-        }
-    }
-
-    if !project_fingerprint.is_empty() {
-        project_fingerprint.hash(&mut hasher);
-        return Some(hasher.finish());
-    }
-
-    // Strategy 2: No explicit markers found — hash a stable window.
-    // Skip first 200 chars (generic framework instructions like
-    // "You are Claude Code..."), take up to 2000 chars of the
-    // middle section which typically contains project-specific context.
-    // Skip the tail where skills/channels are appended.
     let start = 200.min(text.len());
     let end = 2200.min(text.len());
     if start >= end {
-        // Very short prompt — just hash it all
         text.hash(&mut hasher);
     } else {
         text[start..end].hash(&mut hasher);
     }
-    Some(hasher.finish())
+    let window_hash = hasher.finish();
+    match conversation_fingerprint(&val) {
+        Some(c) => format!("sys-{:016x}-{:016x}", window_hash, c),
+        None => format!("sys-{:016x}", window_hash),
+    }
+}
+
+/// Derive a per-conversation fingerprint from the request body. Used to
+/// separate multiple concurrent conversations that share the same project.
+///
+/// Strategy: hash the first user message. Claude Code / Codex / OpenAI
+/// clients all resend the full message history on each turn, so the first
+/// user message is a stable identifier for the conversation throughout its
+/// lifetime. Different chat windows almost always have distinct first
+/// messages so collisions are negligible in practice.
+fn conversation_fingerprint(body: &serde_json::Value) -> Option<u64> {
+    let msgs = body.get("messages")?.as_array()?;
+    let first_user = msgs.iter().find(|m| {
+        m.get("role").and_then(|v| v.as_str()) == Some("user")
+    })?;
+    let content = first_user.get("content")?;
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut any = false;
+    match content {
+        serde_json::Value::String(s) => {
+            s.hash(&mut hasher);
+            any = !s.is_empty();
+        }
+        serde_json::Value::Array(arr) => {
+            for b in arr {
+                if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                    t.hash(&mut hasher);
+                    any = true;
+                } else if let Some(s) = b.as_str() {
+                    s.hash(&mut hasher);
+                    any = true;
+                }
+            }
+        }
+        _ => {}
+    }
+    if any {
+        Some(hasher.finish())
+    } else {
+        None
+    }
+}
+
+/// Extract the working-directory path from a system prompt, tolerating
+/// multiple marker spellings and variable whitespace/newline placement.
+///
+/// Accepts: "Primary working directory: /path", "Working directory:\n/path",
+/// "cwd: /path", etc. Returns the trimmed path, or None if no marker found.
+fn find_working_dir(text: &str) -> Option<&str> {
+    // Ordered from most specific to most generic so a "Primary working
+    // directory:" match isn't shadowed by the substring "working directory:".
+    const MARKERS: &[&str] = &[
+        "Primary working directory:",
+        "primary working directory:",
+        "Working directory:",
+        "working directory:",
+        "cwd:",
+    ];
+    for m in MARKERS {
+        let Some(pos) = text.find(m) else { continue };
+        let rest = &text[pos + m.len()..];
+        // Tolerate an optional space or newline after the colon.
+        let rest = rest.trim_start_matches([' ', '\t']);
+        let end = rest.find('\n').unwrap_or_else(|| rest.len().min(300));
+        let path = rest[..end].trim();
+        if !path.is_empty() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Extract the project working directory from the request body, if present.
 pub fn extract_project_path(body: &[u8]) -> Option<String> {
     let val = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     let text = extract_system_text(&val)?;
-    for marker in &["Primary working directory: ", "working directory: ", "Working directory: ", "cwd: "] {
-        if let Some(pos) = text.find(marker) {
-            let start = pos + marker.len();
-            let end = text[start..].find('\n').map(|i| start + i).unwrap_or(text.len().min(start + 200));
-            let path = text[start..end].trim().to_string();
-            if !path.is_empty() {
-                return Some(path);
-            }
-        }
-    }
-    None
+    find_working_dir(&text).map(String::from)
 }
 
 /// Extract system prompt text from either Anthropic or OpenAI format.
 fn extract_system_text(body: &serde_json::Value) -> Option<String> {
-    // Anthropic format: top-level "system" field
-    if let Some(sys) = body.get("system") {
-        return match sys {
-            serde_json::Value::String(s) => Some(s.clone()),
-            serde_json::Value::Array(arr) => {
-                let text: String = arr
-                    .iter()
-                    .filter_map(|b| {
-                        if b.get("type").and_then(|v| v.as_str()) == Some("text") {
-                            b.get("text").and_then(|v| v.as_str())
-                        } else {
-                            b.as_str()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if text.is_empty() { None } else { Some(text) }
-            }
-            _ => None,
-        };
+    // Anthropic format: top-level "system" field. Note we must NOT early-return
+    // when this field is null/empty — Claude Code actually sends
+    // `"system": null` and puts the real prompt inside `messages[0]` with
+    // role="system" (OpenAI convention). We collect from both sources and
+    // fall through if the top-level field yields nothing.
+    let from_top = body.get("system").and_then(|sys| match sys {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Array(arr) => {
+            let text: String = arr
+                .iter()
+                .filter_map(|b| {
+                    if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        b.get("text").and_then(|v| v.as_str())
+                    } else {
+                        b.as_str()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() { None } else { Some(text) }
+        }
+        _ => None,
+    });
+    if from_top.is_some() {
+        return from_top;
     }
 
-    // OpenAI format: first message with role "system"
+    // Fallback: look for role="system" entries in the messages array. Content
+    // can be a plain string or an array of text blocks (Anthropic-style).
     if let Some(msgs) = body.get("messages").and_then(|v| v.as_array()) {
+        let mut collected: Vec<String> = Vec::new();
         for msg in msgs {
-            if msg.get("role").and_then(|v| v.as_str()) == Some("system") {
-                if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-                    return Some(content.to_string());
+            if msg.get("role").and_then(|v| v.as_str()) != Some("system") {
+                continue;
+            }
+            let content = msg.get("content");
+            if let Some(s) = content.and_then(|v| v.as_str()) {
+                collected.push(s.to_string());
+            } else if let Some(arr) = content.and_then(|v| v.as_array()) {
+                for b in arr {
+                    if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                        collected.push(t.to_string());
+                    } else if let Some(s) = b.as_str() {
+                        collected.push(s.to_string());
+                    }
                 }
             }
+        }
+        if !collected.is_empty() {
+            return Some(collected.join("\n"));
         }
     }
 

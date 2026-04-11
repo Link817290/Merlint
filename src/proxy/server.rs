@@ -72,6 +72,20 @@ pub async fn run_proxy(
         info!("spend tracking ENABLED (persistent)");
     }
 
+    // Pre-populate the session store with sessions that had activity in the
+    // last 7 days so the dashboard shows historical data immediately, even
+    // before any new request arrives. Only sessions that previously routed
+    // through the proxy (and thus exist in spend_log) are loaded — anything
+    // not in spend_log can't be monitored going forward anyway.
+    if let Some(ref sl) = spend_log {
+        let log = sl.lock().await;
+        let mut s = store.lock().await;
+        let loaded = s.preload_recent_sessions(&log, 7);
+        if loaded > 0 {
+            info!("preloaded {} sessions from spend.db", loaded);
+        }
+    }
+
     let budget = BudgetConfig::from_env();
     if budget.has_limits() {
         info!("budget limits: daily=${:.2}, session=${:.2}",
@@ -189,13 +203,52 @@ async fn handle_request(
     // Optionally transform the request body
     let is_anthropic_native = provider == Provider::Anthropic;
 
-    // Check if this is a brand new session (before get_or_create)
-    let is_new_session = if is_chat {
-        let s = store.lock().await;
-        s.get_session(&session_key).is_none()
-    } else {
-        false
-    };
+    // Create (or look up) the session atomically. The "is new?" check and the
+    // actual creation happen under the same lock so concurrent requests with
+    // the same key can't double-emit "New session" events.
+    let mut created_new = false;
+    if is_chat {
+        let mut store_guard = store.lock().await;
+        let (_, is_new) =
+            store_guard.get_or_create_with_project(&session_key, project_path.clone());
+        created_new = is_new;
+        // Don't emit "New session" events for the shared background bucket —
+        // every Haiku title/quota request would otherwise spam the event log.
+        if is_new && session_key != super::session_store::BACKGROUND_SESSION_KEY {
+            let count = store_guard.session_count();
+            let project_full = project_path.as_deref().unwrap_or("unknown");
+            let project_display = project_full
+                .rsplit('/')
+                .find(|s| !s.is_empty())
+                .unwrap_or(project_full);
+            store_guard.log_event(
+                super::session_store::EventKind::NewSession,
+                format!("New session: {} ({})", project_display, count),
+            );
+            drop(store_guard);
+            info!(
+                "New session detected: [{}] project={} (active sessions: {})",
+                session_key, project_full, count
+            );
+        }
+    }
+
+    // If we just created a fresh slot for a live request and spend_log is
+    // configured, pull that session's historical totals so cumulative stats
+    // survive proxy restarts / resumed conversations. Done outside the
+    // earlier critical section to avoid holding the store lock over I/O.
+    if created_new && session_key != super::session_store::BACKGROUND_SESSION_KEY {
+        if let Some(ref sl) = spend_log {
+            let log = sl.lock().await;
+            if let Ok(summary) = log.session_history(&session_key) {
+                if summary.request_count > 0 {
+                    drop(log);
+                    let mut store_guard = store.lock().await;
+                    store_guard.attach_historical(&session_key, summary);
+                }
+            }
+        }
+    }
 
     let (final_body, transform_stats) = if is_chat && config.optimize {
         // Get (or create) the transformer for this session
@@ -244,22 +297,6 @@ async fn handle_request(
     } else {
         (body_bytes.clone(), None)
     };
-
-    // Log new session detection
-    if is_new_session {
-        // Ensure session is created in the store even if optimize is off
-        let mut store_guard = store.lock().await;
-        let _ = store_guard.get_or_create_with_project(&session_key, project_path.clone());
-        let count = store_guard.session_count();
-        let project_full = project_path.as_deref().unwrap_or("unknown");
-        let project_display = project_full.rsplit('/').find(|s| !s.is_empty()).unwrap_or(project_full);
-        store_guard.log_event(
-            super::session_store::EventKind::NewSession,
-            format!("New session: {} ({})", project_display, count),
-        );
-        drop(store_guard);
-        info!("New session detected: [{}] project={} (active sessions: {})", session_key, project_full, count);
-    }
 
     let mut forward_req = client.request(
         reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::POST),
@@ -328,6 +365,7 @@ async fn handle_request(
         let path_bg = path.clone();
         let provider_bg = provider;
         let status_code = status.as_u16();
+        let target_url_bg = target_url.clone();
 
         // Spawn background task: forward reqwest stream chunks to the channel
         // and collect full response for post-processing
@@ -356,6 +394,8 @@ async fn handle_request(
                     &spend_log_bg, &cost_calc_bg, transform_stats_bg, latency_ms,
                     &config_bg, &body_bytes_bg, &path_bg, provider_bg, status_code,
                 ).await;
+            } else {
+                log_upstream_error(&target_url_bg, status_code, &resp_bytes);
             }
         });
 
@@ -377,6 +417,21 @@ async fn handle_request(
             &spend_log, &cost_calc, transform_stats, latency_ms,
             &config, &body_bytes, &path, provider, status.as_u16(),
         ).await;
+    } else if is_chat {
+        log_upstream_error(&target_url, status.as_u16(), &resp_bytes);
+        // Fall through so the error response is still logged as activity below.
+        let saved = transform_stats.map(|(_, _, s)| s);
+        let mut store_guard = store.lock().await;
+        store_guard.log_activity(super::session_store::ActivityEntry {
+            timestamp: chrono::Utc::now(),
+            session_key: session_key.clone(),
+            path: path.clone(),
+            method: method.to_string(),
+            status: status.as_u16(),
+            tokens: None,
+            tokens_saved: saved,
+            latency_ms,
+        });
     } else {
         // Log activity for non-chat requests
         let saved = transform_stats.map(|(_, _, s)| s);
@@ -474,23 +529,80 @@ async fn handle_status(store: &SharedSessionStore, spend_log: &Option<SharedSpen
     let mut sessions = Vec::new();
 
     for slot in s.all_slots() {
-        if slot.key == "__non_chat__" { continue; }
-        let (key, session, tx_opt, project) = (slot.key, slot.session, slot.transformer, slot.project_path);
-        let total_tokens: u64 = session.entries.iter().filter_map(|e| e.total_tokens()).sum();
-        let total_prompt: u64 = session.entries.iter().filter_map(|e| e.prompt_tokens()).sum();
-        let total_completion: u64 = session.entries.iter().filter_map(|e| e.completion_tokens()).sum();
-        let total_cache_read: u64 = session.entries.iter().filter_map(|e| e.cache_read_tokens()).sum();
-        let total_latency: u64 = session.entries.iter().map(|e| e.latency_ms).sum();
+        // Hide internal buckets from the per-project breakdown:
+        // __non_chat__   — health checks, dashboard fetches, etc.
+        // __background__ — Haiku title generation, quota probes, etc.
+        if slot.key == "__non_chat__"
+            || slot.key == super::session_store::BACKGROUND_SESSION_KEY
+        {
+            continue;
+        }
+        let (key, session, tx_opt, project, historical) = (
+            slot.key,
+            slot.session,
+            slot.transformer,
+            slot.project_path,
+            slot.historical,
+        );
+        // Live values from this proxy run. Note: Anthropic's `input_tokens`
+        // is the FRESH (non-cached) portion only — true prompt size is
+        // input + cache_read + cache_creation.
+        let live_requests: u64 = session.entries.len() as u64;
+        let live_fresh_input: u64 = session.entries.iter().filter_map(|e| e.prompt_tokens()).sum();
+        let live_completion: u64 = session.entries.iter().filter_map(|e| e.completion_tokens()).sum();
+        let live_cache_read: u64 = session.entries.iter().filter_map(|e| e.cache_read_tokens()).sum();
+        let live_cache_creation: u64 = session
+            .entries
+            .iter()
+            .filter_map(|e| e.cache_creation_tokens())
+            .sum();
+        let live_latency: u64 = session.entries.iter().map(|e| e.latency_ms).sum();
 
-        let mut tokens_saved: i64 = 0;
+        // Merge with stats persisted from prior proxy runs.
+        // NB: HistoricalSummary doesn't currently track cache_creation
+        // separately (legacy schema). For now we treat historical
+        // prompt_tokens as the fresh portion and historical cache_read
+        // as already-counted cache reads — same convention as live.
+        let (hist_requests, hist_fresh_input, hist_completion, hist_cache_read, hist_latency, hist_saved) =
+            match historical {
+                Some(h) => (
+                    h.request_count,
+                    h.prompt_tokens,
+                    h.completion_tokens,
+                    h.cache_read_tokens,
+                    h.total_latency_ms,
+                    h.tokens_saved,
+                ),
+                None => (0, 0, 0, 0, 0, 0),
+            };
+
+        let total_requests = live_requests + hist_requests;
+        let total_fresh_input = live_fresh_input + hist_fresh_input;
+        let total_completion = live_completion + hist_completion;
+        let total_cache_read = live_cache_read + hist_cache_read;
+        let total_cache_creation = live_cache_creation; // historical not tracked separately
+        let total_latency = live_latency + hist_latency;
+
+        // True prompt = fresh input + cache reads + cache writes.
+        let total_prompt = total_fresh_input + total_cache_read + total_cache_creation;
+        let total_tokens = total_prompt + total_completion;
+
+        // Cache hit rate as a fraction of the true prompt input. Will be
+        // in [0, 100] regardless of how much was cached.
+        let api_cache_hit_rate: u64 = if total_prompt > 0 {
+            ((total_cache_read as f64 / total_prompt as f64) * 100.0).round() as u64
+        } else {
+            0
+        };
+
+        let mut tokens_saved: i64 = hist_saved;
         let mut tools_tracked: usize = 0;
-        let mut cache_hit_rate: f64 = 0.0;
         let mut pruning_suspended = false;
         if let Some(tx) = tx_opt {
             if let Ok(t) = tx.try_lock() {
-                tokens_saved = t.total_tokens_saved();
+                // Transformer tracks run-local savings; add historical on top.
+                tokens_saved += t.total_tokens_saved();
                 tools_tracked = t.tool_usage_snapshot().len();
-                cache_hit_rate = t.cache_hit_rate();
                 pruning_suspended = t.is_pruning_suspended();
             }
         }
@@ -503,15 +615,21 @@ async fn handle_status(store: &SharedSessionStore, spend_log: &Option<SharedSpen
             "id": session.id,
             "started_at": session.started_at.to_rfc3339(),
             "last_activity": last_activity,
-            "request_count": session.entries.len(),
+            "request_count": total_requests,
+            "live_request_count": live_requests,
+            "historical_request_count": hist_requests,
             "total_tokens": total_tokens,
+            // prompt_tokens here is the TRUE total (fresh + cached + cache writes)
+            // so the dashboard can display sane numbers and compute correct %.
             "prompt_tokens": total_prompt,
+            "fresh_input_tokens": total_fresh_input,
             "completion_tokens": total_completion,
             "cache_read_tokens": total_cache_read,
+            "cache_creation_tokens": total_cache_creation,
             "total_latency_ms": total_latency,
             "tokens_saved": tokens_saved,
             "tools_tracked": tools_tracked,
-            "api_cache_hit_rate": (cache_hit_rate * 100.0).round() as u64,
+            "api_cache_hit_rate": api_cache_hit_rate,
             "pruning_suspended": pruning_suspended,
         }));
     }
@@ -636,8 +754,7 @@ async fn process_chat_response(
         let req = serde_json::from_slice::<serde_json::Value>(body_bytes)
             .ok()
             .and_then(|v| anthropic_request_to_chat_request(&v));
-        let resp = serde_json::from_slice::<serde_json::Value>(resp_bytes)
-            .ok()
+        let resp = anthropic_value_from_bytes(resp_bytes)
             .and_then(|v| anthropic_response_to_chat_response(&v));
         (req, resp)
     } else {
@@ -708,10 +825,22 @@ async fn process_chat_response(
             &model_name, prompt_tok, completion_tok,
             cache_read_tok, cache_creation_tok, tokens_saved,
         );
+        // Look up the slot's project_path (set when extract_project_path
+        // succeeded during request routing) so recent_sessions can group
+        // historical entries by project after a proxy restart.
+        let project_path = {
+            let s = store.lock().await;
+            s.all_slots()
+                .iter()
+                .find(|sl| sl.key == session_key)
+                .and_then(|sl| sl.project_path.map(String::from))
+                .unwrap_or_default()
+        };
         let entry = SpendEntry {
             request_id: uuid::Uuid::new_v4().to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             session_key: session_key.to_string(),
+            project_path,
             model: model_name,
             prompt_tokens: prompt_tok,
             completion_tokens: completion_tok,
@@ -820,6 +949,27 @@ fn sanitize_key(key: &str) -> String {
     key.chars()
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect()
+}
+
+/// Emit a warning log when the upstream returns a non-2xx response for a chat
+/// request. Includes the target URL, status code, and a trimmed snippet of the
+/// error body so users can diagnose routing / auth / endpoint problems.
+fn log_upstream_error(target_url: &str, status_code: u16, body: &[u8]) {
+    const MAX_SNIPPET: usize = 300;
+    let snippet = String::from_utf8_lossy(body);
+    let snippet = snippet.trim();
+    let snippet = if snippet.chars().count() > MAX_SNIPPET {
+        let truncated: String = snippet.chars().take(MAX_SNIPPET).collect();
+        format!("{}… ({} bytes total)", truncated, body.len())
+    } else {
+        snippet.to_string()
+    };
+    tracing::warn!(
+        "upstream chat error: status={} url={} body={}",
+        status_code,
+        target_url,
+        snippet
+    );
 }
 
 /// Parse response bytes as ChatResponse, handling both regular JSON and SSE streaming formats.
@@ -1244,6 +1394,165 @@ fn extract_usage_from_sse(
 
     let tools_json = serde_json::to_string(&tool_names).unwrap_or_else(|_| "[]".to_string());
     (model, input_tokens, output_tokens, cache_read, cache_create, tools_json)
+}
+
+/// Parse a (possibly SSE-framed) Anthropic response body into a single JSON value
+/// shaped like a non-streaming message response.
+///
+/// Anthropic native streaming emits `message_start`, `content_block_start`,
+/// `content_block_delta` (text_delta / input_json_delta), `content_block_stop`,
+/// `message_delta` (with stop_reason + output usage) and `message_stop` events.
+/// We walk those events once and reassemble a synthetic message object that
+/// `anthropic_response_to_chat_response` and `TraceEntry::new` can consume.
+fn anthropic_value_from_bytes(bytes: &[u8]) -> Option<serde_json::Value> {
+    // Plain JSON response — use directly.
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        return Some(v);
+    }
+
+    let text = String::from_utf8_lossy(bytes);
+    let mut id: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut cache_read: Option<u64> = None;
+    let mut cache_creation: Option<u64> = None;
+    let mut stop_reason: Option<String> = None;
+    // Content blocks keyed by their index so we can merge deltas in order.
+    let mut blocks: std::collections::BTreeMap<u64, serde_json::Value> =
+        std::collections::BTreeMap::new();
+    // Partial tool_use input_json_delta fragments keyed by block index.
+    let mut tool_input_buf: std::collections::BTreeMap<u64, String> =
+        std::collections::BTreeMap::new();
+
+    for line in text.lines() {
+        let data = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:"));
+        let Some(data) = data else { continue };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let Ok(ev) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+        let ev_type = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        match ev_type {
+            "message_start" => {
+                if let Some(msg) = ev.get("message") {
+                    if id.is_none() {
+                        id = msg.get("id").and_then(|v| v.as_str()).map(String::from);
+                    }
+                    if model.is_none() {
+                        model = msg.get("model").and_then(|v| v.as_str()).map(String::from);
+                    }
+                    if let Some(u) = msg.get("usage") {
+                        if let Some(p) = u.get("input_tokens").and_then(|v| v.as_u64()) {
+                            input_tokens = p;
+                        }
+                        if let Some(o) = u.get("output_tokens").and_then(|v| v.as_u64()) {
+                            output_tokens = o;
+                        }
+                        if let Some(c) = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                            cache_read = Some(c);
+                        }
+                        if let Some(c) = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()) {
+                            cache_creation = Some(c);
+                        }
+                    }
+                }
+            }
+            "content_block_start" => {
+                let idx = ev.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                if let Some(cb) = ev.get("content_block").cloned() {
+                    blocks.insert(idx, cb);
+                }
+            }
+            "content_block_delta" => {
+                let idx = ev.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                if let Some(delta) = ev.get("delta") {
+                    match delta.get("type").and_then(|t| t.as_str()) {
+                        Some("text_delta") => {
+                            if let Some(t) = delta.get("text").and_then(|v| v.as_str()) {
+                                let block = blocks.entry(idx).or_insert_with(|| {
+                                    serde_json::json!({"type": "text", "text": ""})
+                                });
+                                let existing = block
+                                    .get("text")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                block["text"] = serde_json::Value::String(existing + t);
+                            }
+                        }
+                        Some("input_json_delta") => {
+                            if let Some(partial) =
+                                delta.get("partial_json").and_then(|v| v.as_str())
+                            {
+                                tool_input_buf.entry(idx).or_default().push_str(partial);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(u) = ev.get("usage") {
+                    if let Some(o) = u.get("output_tokens").and_then(|v| v.as_u64()) {
+                        output_tokens = o;
+                    }
+                }
+                if let Some(d) = ev.get("delta") {
+                    if let Some(sr) = d.get("stop_reason").and_then(|v| v.as_str()) {
+                        stop_reason = Some(sr.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Attach accumulated tool_use arguments to their blocks.
+    for (idx, buf) in tool_input_buf {
+        if let Some(block) = blocks.get_mut(&idx) {
+            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&buf).unwrap_or(serde_json::json!({}));
+                block["input"] = parsed;
+            }
+        }
+    }
+
+    let content: Vec<serde_json::Value> = blocks.into_values().collect();
+    if content.is_empty() && input_tokens == 0 && output_tokens == 0 {
+        return None;
+    }
+
+    let mut usage = serde_json::json!({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    });
+    if let Some(c) = cache_read {
+        usage["cache_read_input_tokens"] = serde_json::json!(c);
+    }
+    if let Some(c) = cache_creation {
+        usage["cache_creation_input_tokens"] = serde_json::json!(c);
+    }
+
+    let mut obj = serde_json::json!({
+        "content": content,
+        "usage": usage,
+    });
+    if let Some(i) = id {
+        obj["id"] = serde_json::Value::String(i);
+    }
+    if let Some(m) = model {
+        obj["model"] = serde_json::Value::String(m);
+    }
+    if let Some(s) = stop_reason {
+        obj["stop_reason"] = serde_json::Value::String(s);
+    }
+    Some(obj)
 }
 
 fn anthropic_response_to_chat_response(val: &serde_json::Value) -> Option<ChatResponse> {
