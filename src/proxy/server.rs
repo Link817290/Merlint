@@ -23,6 +23,18 @@ fn full_body_from_vec(v: Vec<u8>) -> BoxBody {
     full_body(Bytes::from(v))
 }
 
+/// Build a JSON response, falling back to a 500 error if serialization or builder fails.
+fn json_response(status: u16, body: &impl serde::Serialize) -> Response<BoxBody> {
+    let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(full_body_from_vec(bytes))
+        .unwrap_or_else(|_| {
+            Response::new(full_body(Bytes::from_static(b"{\"error\":\"internal\"}")))
+        })
+}
+
 use crate::models::api::{
     ChatRequest, ChatResponse, Choice, FunctionCall, FunctionDef, Message, MessageContent, Tool,
     ToolCall, Usage,
@@ -162,11 +174,7 @@ async fn handle_request(
                         "message": msg,
                     }
                 });
-                return Ok(Response::builder()
-                    .status(429)
-                    .header("content-type", "application/json")
-                    .body(full_body_from_vec(serde_json::to_vec(&err_body).unwrap()))
-                    .unwrap());
+                return Ok(json_response(429, &err_body));
             }
         }
     }
@@ -278,11 +286,7 @@ async fn handle_request(
             let err_body = serde_json::json!({
                 "error": { "message": format!("merlint proxy error: {}", e) }
             });
-            return Ok(Response::builder()
-                .status(502)
-                .header("content-type", "application/json")
-                .body(full_body_from_vec(serde_json::to_vec(&err_body).unwrap()))
-                .unwrap());
+            return Ok(json_response(502, &err_body));
         }
     };
 
@@ -354,7 +358,7 @@ async fn handle_request(
         let stream_body = StreamBody::new(stream);
         let boxed_body: BoxBody = http_body_util::BodyExt::boxed(stream_body);
 
-        return Ok(resp_builder.body(boxed_body).unwrap());
+        return Ok(resp_builder.body(boxed_body).expect("valid response builder"));
     }
 
     let resp_bytes = response.bytes().await.unwrap_or_default();
@@ -398,7 +402,7 @@ async fn handle_request(
 
     Ok(resp_builder
         .body(full_body(resp_bytes))
-        .unwrap())
+        .expect("valid response builder"))
 }
 
 /// Handle the /merlint/dashboard endpoint — serves the web UI with embedded logo.
@@ -409,7 +413,7 @@ fn handle_dashboard() -> Response<BoxBody> {
         .header("content-type", "text/html; charset=utf-8")
         .header("cache-control", "no-cache")
         .body(full_body(Bytes::from(html)))
-        .unwrap()
+        .expect("valid response builder")
 }
 
 /// Handle the /merlint/spend endpoint — returns persistent spend stats as JSON.
@@ -455,11 +459,7 @@ async fn handle_spend_api(spend_log: &Option<SharedSpendLog>) -> Response<BoxBod
         serde_json::json!({"error": "spend tracking not enabled"})
     };
 
-    Response::builder()
-        .status(200)
-        .header("content-type", "application/json")
-        .body(full_body_from_vec(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
+    json_response(200, &body)
 }
 
 /// Handle the /merlint/status endpoint — returns session stats as JSON.
@@ -467,7 +467,8 @@ async fn handle_status(store: &SharedSessionStore) -> Response<BoxBody> {
     let s = store.lock().await;
     let mut sessions = Vec::new();
 
-    for (key, session, tx_opt, project) in s.all_slots() {
+    for slot in s.all_slots() {
+        let (key, session, tx_opt, project) = (slot.key, slot.session, slot.transformer, slot.project_path);
         let total_tokens: u64 = session.entries.iter().filter_map(|e| e.total_tokens()).sum();
         let total_prompt: u64 = session.entries.iter().filter_map(|e| e.prompt_tokens()).sum();
         let total_completion: u64 = session.entries.iter().filter_map(|e| e.completion_tokens()).sum();
@@ -547,11 +548,7 @@ async fn handle_status(store: &SharedSessionStore) -> Response<BoxBody> {
         "events": events,
     });
 
-    Response::builder()
-        .status(200)
-        .header("content-type", "application/json")
-        .body(full_body_from_vec(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
+    json_response(200, &body)
 }
 
 /// Post-process a chat response: record traces, tool usage, cache stats, spend.

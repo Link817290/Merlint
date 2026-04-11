@@ -504,12 +504,4 @@ pub struct PruningRecommendation {
     pub data_sessions: i64,
 }
 
-fn format_tokens(n: i64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        format!("{}", n)
-    }
-}
+use crate::util::format::format_tokens;

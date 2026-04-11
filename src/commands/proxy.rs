@@ -78,9 +78,10 @@ pub async fn run(
             let sessions = store_guard.all_slots();
             let session_count = sessions.len();
 
-            for (key, session, tx_opt, _project) in &sessions {
+            for slot in &sessions {
+                let (key, session, tx_opt) = (slot.key, slot.session, slot.transformer);
                 // Save trace file per session
-                let file_name = if *key == "default" {
+                let file_name = if key == "default" {
                     output_path.clone()
                 } else {
                     let dir = output_path.parent().unwrap_or_else(|| std::path::Path::new("."));

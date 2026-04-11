@@ -569,15 +569,7 @@ fn render_event_log(f: &mut Frame, area: Rect, status: &ProxyStatus) {
     f.render_widget(log_widget, inner);
 }
 
-fn format_tokens(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        format!("{}", n)
-    }
-}
+use merlint::util::format::format_tokens_u64 as format_tokens;
 
 fn format_uptime(secs: i64) -> String {
     if secs < 60 {

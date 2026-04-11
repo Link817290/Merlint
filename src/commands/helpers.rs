@@ -230,12 +230,4 @@ pub fn agent_kind_str(kind: AgentKind) -> &'static str {
     }
 }
 
-pub fn format_tokens(n: i64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        format!("{}", n)
-    }
-}
+pub use merlint::util::format::format_tokens;

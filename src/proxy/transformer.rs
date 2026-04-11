@@ -509,9 +509,7 @@ impl RequestTransformer {
             // Cache is working well — don't touch tools
             if let Some(tools_arr) = body.get("tools").and_then(|v| v.as_array()) {
                 for t in tools_arr {
-                    if let Some(name) = t.get("name").and_then(|v| v.as_str())
-                        .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
-                    {
+                    if let Some(name) = raw_tool_name(t) {
                         self.tools_seen.insert(name.to_string());
                     }
                 }
@@ -521,11 +519,7 @@ impl RequestTransformer {
                 let original_count = tools_arr.len();
 
                 let current_names: HashSet<String> = tools_arr.iter()
-                    .filter_map(|t| {
-                        t.get("name").and_then(|v| v.as_str())
-                            .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
-                            .map(String::from)
-                    })
+                    .filter_map(|t| raw_tool_name(t).map(String::from))
                     .collect();
 
                 let new_tools: HashSet<String> = current_names.difference(&self.tools_seen).cloned().collect();
@@ -538,24 +532,8 @@ impl RequestTransformer {
                 // Use frozen set if available and no new tools
                 if let Some(ref frozen) = self.frozen_tools {
                     if !has_new_tools {
-                        tools_arr.retain(|t| {
-                            let name = t.get("name").and_then(|v| v.as_str())
-                                .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()));
-                            match name {
-                                Some(n) => frozen.contains(n),
-                                None => true,
-                            }
-                        });
-                        // Sort for cache prefix stability
-                        tools_arr.sort_by(|a, b| {
-                            let na = a.get("name").and_then(|v| v.as_str())
-                                .or_else(|| a.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
-                                .unwrap_or("");
-                            let nb = b.get("name").and_then(|v| v.as_str())
-                                .or_else(|| b.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
-                                .unwrap_or("");
-                            na.cmp(nb)
-                        });
+                        tools_arr.retain(|t| raw_tool_name(t).map_or(true, |n| frozen.contains(n)));
+                        sort_raw_tools(tools_arr);
                         tools_pruned = original_count - tools_arr.len();
                         estimated_tokens_saved += tools_pruned as i64 * 200;
                     } else {
@@ -565,31 +543,12 @@ impl RequestTransformer {
 
                 if self.frozen_tools.is_none() {
                     tools_arr.retain(|t| {
-                        let name = t.get("name").and_then(|v| v.as_str())
-                            .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()));
-                        match name {
-                            Some(n) => self.tools_used.contains(n) || new_tools.contains(n),
-                            None => true,
-                        }
+                        raw_tool_name(t).map_or(true, |n| self.tools_used.contains(n) || new_tools.contains(n))
                     });
-
-                    // Sort for cache prefix stability
-                    tools_arr.sort_by(|a, b| {
-                        let na = a.get("name").and_then(|v| v.as_str())
-                            .or_else(|| a.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
-                            .unwrap_or("");
-                        let nb = b.get("name").and_then(|v| v.as_str())
-                            .or_else(|| b.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
-                            .unwrap_or("");
-                        na.cmp(nb)
-                    });
+                    sort_raw_tools(tools_arr);
 
                     let kept: HashSet<String> = tools_arr.iter()
-                        .filter_map(|t| {
-                            t.get("name").and_then(|v| v.as_str())
-                                .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
-                                .map(String::from)
-                        })
+                        .filter_map(|t| raw_tool_name(t).map(String::from))
                         .collect();
                     self.frozen_tools = Some(kept);
 
@@ -600,9 +559,7 @@ impl RequestTransformer {
         } else {
             if let Some(tools_arr) = body.get("tools").and_then(|v| v.as_array()) {
                 for t in tools_arr {
-                    if let Some(name) = t.get("name").and_then(|v| v.as_str())
-                        .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
-                    {
+                    if let Some(name) = raw_tool_name(t) {
                         self.tools_seen.insert(name.to_string());
                     }
                 }
@@ -844,6 +801,23 @@ impl RequestTransformer {
             self.request_count = 2; // Next transform will be #3, enabling pruning
         }
     }
+}
+
+/// Extract tool name from a raw JSON tool object.
+/// Handles both Anthropic format (top-level "name") and OpenAI format (nested "function.name").
+fn raw_tool_name(t: &serde_json::Value) -> Option<&str> {
+    t.get("name")
+        .and_then(|v| v.as_str())
+        .or_else(|| t.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()))
+}
+
+/// Sort raw JSON tools array alphabetically by name for cache prefix stability.
+fn sort_raw_tools(tools: &mut Vec<serde_json::Value>) {
+    tools.sort_by(|a, b| {
+        let na = raw_tool_name(a).unwrap_or("");
+        let nb = raw_tool_name(b).unwrap_or("");
+        na.cmp(nb)
+    });
 }
 
 /// Check if a tool name is a file-reading tool

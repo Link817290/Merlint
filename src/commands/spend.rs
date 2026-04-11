@@ -191,20 +191,4 @@ fn run_json(log: &SpendLog, days: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn format_cost(usd: f64) -> String {
-    if usd < 0.01 { format!("${:.4}", usd) }
-    else if usd < 1.0 { format!("${:.3}", usd) }
-    else { format!("${:.2}", usd) }
-}
-
-fn format_tokens(n: i64) -> String {
-    if n >= 1_000_000 { format!("{:.1}M", n as f64 / 1_000_000.0) }
-    else if n >= 1_000 { format!("{:.1}k", n as f64 / 1_000.0) }
-    else { n.to_string() }
-}
-
-fn format_num(n: i64) -> String {
-    if n >= 1_000_000 { format!("{:.1}M", n as f64 / 1_000_000.0) }
-    else if n >= 1_000 { format!("{:.1}k", n as f64 / 1_000.0) }
-    else { n.to_string() }
-}
+use merlint::util::format::{format_cost, format_tokens, format_num};

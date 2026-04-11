@@ -39,6 +39,14 @@ pub enum EventKind {
     Info,
 }
 
+/// A read-only view of a session slot, returned by `all_slots()`.
+pub struct SessionSnapshot<'a> {
+    pub key: &'a str,
+    pub session: &'a TraceSession,
+    pub transformer: Option<&'a SharedTransformer>,
+    pub project_path: Option<&'a str>,
+}
+
 /// Manages multiple concurrent sessions, each with its own trace and transformer.
 pub struct SessionStore {
     sessions: HashMap<String, SessionSlot>,
@@ -236,10 +244,15 @@ impl SessionStore {
     }
 
     /// Return all sessions with their transformers.
-    pub fn all_slots(&self) -> Vec<(&str, &TraceSession, Option<&SharedTransformer>, Option<&str>)> {
+    pub fn all_slots(&self) -> Vec<SessionSnapshot<'_>> {
         self.sessions
             .iter()
-            .map(|(k, s)| (k.as_str(), &s.session, s.transformer.as_ref(), s.project_path.as_deref()))
+            .map(|(k, s)| SessionSnapshot {
+                key: k.as_str(),
+                session: &s.session,
+                transformer: s.transformer.as_ref(),
+                project_path: s.project_path.as_deref(),
+            })
             .collect()
     }
 
