@@ -17,12 +17,20 @@ fn write_env_file(port: u16) -> anyhow::Result<()> {
     // POSIX shell (bash/zsh)
     std::fs::write(
         dir.join("env"),
-        format!("export ANTHROPIC_BASE_URL=http://127.0.0.1:{}\n", port),
+        format!(
+            "export ANTHROPIC_BASE_URL=http://127.0.0.1:{port}\n\
+             printf '\\033[0;36m  merlint\\033[0m proxy active → \\033[0;33m127.0.0.1:{port}\\033[0m\\n'\n",
+            port = port,
+        ),
     )?;
     // PowerShell
     std::fs::write(
         dir.join("env.ps1"),
-        format!("$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:{}'\r\n", port),
+        format!(
+            "$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:{port}'\r\n\
+             Write-Host '  merlint proxy active → 127.0.0.1:{port}' -ForegroundColor Cyan\r\n",
+            port = port,
+        ),
     )?;
     Ok(())
 }
