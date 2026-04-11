@@ -217,7 +217,9 @@ impl SpendLog {
                 COALESCE(SUM(cost_saved_usd), 0.0),
                 COALESCE(SUM(prompt_tokens + completion_tokens), 0),
                 COALESCE(SUM(tokens_saved), 0),
-                COALESCE(SUM(cache_read_tokens), 0)
+                COALESCE(SUM(prompt_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0)
             FROM spend_log",
             [],
             |row| Ok(SpendSummary {
@@ -226,7 +228,9 @@ impl SpendLog {
                 total_saved_usd: row.get(2)?,
                 total_tokens: row.get(3)?,
                 total_tokens_saved: row.get(4)?,
-                total_cache_read_tokens: row.get(5)?,
+                total_fresh_input_tokens: row.get(5)?,
+                total_cache_read_tokens: row.get(6)?,
+                total_cache_creation_tokens: row.get(7)?,
             }),
         ).map_err(Into::into)
     }
@@ -240,7 +244,9 @@ impl SpendLog {
                 COALESCE(SUM(cost_saved_usd), 0.0),
                 COALESCE(SUM(prompt_tokens + completion_tokens), 0),
                 COALESCE(SUM(tokens_saved), 0),
-                COALESCE(SUM(cache_read_tokens), 0)
+                COALESCE(SUM(prompt_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0)
             FROM spend_log
             WHERE timestamp >= datetime('now', ?1)",
             params![format!("-{} days", days)],
@@ -250,7 +256,9 @@ impl SpendLog {
                 total_saved_usd: row.get(2)?,
                 total_tokens: row.get(3)?,
                 total_tokens_saved: row.get(4)?,
-                total_cache_read_tokens: row.get(5)?,
+                total_fresh_input_tokens: row.get(5)?,
+                total_cache_read_tokens: row.get(6)?,
+                total_cache_creation_tokens: row.get(7)?,
             }),
         ).map_err(Into::into)
     }
@@ -453,11 +461,19 @@ pub struct SpendSummary {
     pub total_saved_usd: f64,
     pub total_tokens: i64,
     pub total_tokens_saved: i64,
+    /// Sum of `prompt_tokens` (fresh input) across entries. Used together
+    /// with cache_read/write totals to compute a net cache savings figure
+    /// that matches the per-session breakdown (including cache-write overhead).
+    pub total_fresh_input_tokens: i64,
     /// Sum of `cache_read_tokens` across entries in the window. The dashboard
     /// uses this to compute a truthful "cache savings today" number — the
     /// dollar value Anthropic's prompt cache shaved off the theoretical
     /// no-cache cost, which is the real source of savings for most users.
     pub total_cache_read_tokens: i64,
+    /// Sum of `cache_creation_tokens` across entries. Netted against
+    /// read savings so the headline savings doesn't over-report on turns
+    /// that were mostly building cache rather than reading from it.
+    pub total_cache_creation_tokens: i64,
 }
 
 #[derive(Debug, Clone)]

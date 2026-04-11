@@ -86,31 +86,6 @@ pub async fn run_proxy(
         }
     }
 
-    // Opt-in desktop notification loop. Watches session cache states and
-    // fires a macOS/Linux/Windows native notification when a session is
-    // about to lose its Anthropic prompt cache — the single biggest
-    // preventable cost for idle-while-context-warm workflows. Off by
-    // default; enable with `MERLINT_DESKTOP_NOTIFY=1` in the shell that
-    // launches the proxy (or in `merlint up`'s env).
-    if super::notify::is_enabled() {
-        let store_for_notify = store.clone();
-        tokio::spawn(async move {
-            super::notify::cache_notification_loop(store_for_notify).await;
-        });
-        // Welcome ping so users can immediately verify the native path
-        // actually reaches Notification Center. macOS silently drops
-        // osascript notifications unless Script Editor has permission
-        // (or terminal-notifier is installed and granted) — firing this
-        // at startup surfaces the problem right away instead of leaving
-        // the user to wait 4 minutes for a cache transition and wonder
-        // why nothing popped.
-        super::notify::notify(
-            "merlint".to_string(),
-            "Desktop notifications enabled — you'll get a heads-up 1 minute before cache expiry.".to_string(),
-        );
-        info!("desktop cache notifications ENABLED (MERLINT_DESKTOP_NOTIFY=1)");
-    }
-
     let budget = BudgetConfig::from_env();
     if budget.has_limits() {
         info!("budget limits: daily=${:.2}, session=${:.2}",
