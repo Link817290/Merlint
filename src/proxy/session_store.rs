@@ -137,67 +137,90 @@ impl SessionStore {
     }
 
     /// Get or create a session slot, optionally attaching a project path.
+    ///
+    /// Two paths create a transformer when `self.optimize` is true:
+    /// 1. Brand new slot — build + warm-start the transformer immediately.
+    /// 2. Existing slot that still has `transformer: None` — this is the
+    ///    "preloaded at startup, now going live" case. Without this lazy
+    ///    upgrade, preloaded sessions stay optimizer-less forever because
+    ///    preload deliberately inserts slots with no transformer (it would
+    ///    be wasteful to warm-start every dormant session at boot).
     pub fn get_or_create_with_project(&mut self, key: &str, project_path: Option<String>) -> (&mut SessionSlot, bool) {
         let is_new = !self.sessions.contains_key(key);
-        if !is_new {
-            // Update project_path if it was missing before
-            if project_path.is_some() {
-                let slot = self.sessions.get_mut(key).unwrap();
-                if slot.project_path.is_none() {
-                    slot.project_path = project_path.clone();
-                }
-            }
-        }
+
+        // Decide up-front whether we'll need to build a transformer. Doing it
+        // before we grab a mutable reference to the slot keeps the borrow
+        // checker happy — build_transformer needs &self for merged_history().
+        let needs_new_transformer = self.optimize
+            && (is_new
+                || self
+                    .sessions
+                    .get(key)
+                    .map(|s| s.transformer.is_none())
+                    .unwrap_or(false));
+        let new_transformer = if needs_new_transformer {
+            Some(self.build_transformer(key))
+        } else {
+            None
+        };
+
         if is_new {
             let mut session = TraceSession::new();
             session.meta_session_key = Some(key.to_string());
+            self.sessions.insert(key.to_string(), SessionSlot {
+                session,
+                transformer: new_transformer,
+                project_path,
+                historical: None,
+            });
+        } else {
+            let slot = self.sessions.get_mut(key).unwrap();
+            if project_path.is_some() && slot.project_path.is_none() {
+                slot.project_path = project_path;
+            }
+            if slot.transformer.is_none() {
+                if let Some(tx) = new_transformer {
+                    slot.transformer = Some(tx);
+                }
+            }
+        }
+        (self.sessions.get_mut(key).unwrap(), is_new)
+    }
 
-            // Transformer warm-start still opens its own spend.db — it only
-            // runs when optimize=true, which is off for all tests, so there's
-            // no cross-test contamination. Historical summary is populated
-            // separately via attach_historical() from the server layer,
-            // which is what tests bypass when passing spend_log=None.
-            let transformer = if self.optimize {
-                let tx = new_shared_transformer();
+    /// Build and warm-start a transformer for the given session key. Tries
+    /// per-project history from spend.db first; falls back to global merged
+    /// history if nothing project-specific is available.
+    ///
+    /// Opens its own SpendLog handle — this is only called when optimize=on,
+    /// which tests leave off, so test runs never touch the real spend.db.
+    fn build_transformer(&self, key: &str) -> SharedTransformer {
+        let tx = new_shared_transformer();
 
-                let mut loaded_project = false;
-                if key.starts_with("sys-") {
-                    if let Ok(db) = SpendLog::open() {
-                        if let Ok(freq) = db.tool_frequency_for_session(key) {
-                            if !freq.is_empty() {
-                                let total = db.session_request_count(key).unwrap_or(0);
-                                if total >= 3 {
-                                    if let Ok(mut t) = tx.try_lock() {
-                                        t.load_history(&freq, total);
-                                        loaded_project = true;
-                                    }
-                                }
+        let mut loaded_project = false;
+        if key.starts_with("sys-") {
+            if let Ok(db) = SpendLog::open() {
+                if let Ok(freq) = db.tool_frequency_for_session(key) {
+                    if !freq.is_empty() {
+                        let total = db.session_request_count(key).unwrap_or(0);
+                        if total >= 3 {
+                            if let Ok(mut t) = tx.try_lock() {
+                                t.load_history(&freq, total);
+                                loaded_project = true;
                             }
                         }
                     }
                 }
-
-                if !loaded_project {
-                    let merged = self.merged_history();
-                    if let Some((ref freq, total)) = merged {
-                        if let Ok(mut t) = tx.try_lock() {
-                            t.load_history(freq, total);
-                        }
-                    }
-                }
-                Some(tx)
-            } else {
-                None
-            };
-
-            self.sessions.insert(key.to_string(), SessionSlot {
-                session,
-                transformer,
-                project_path,
-                historical: None,
-            });
+            }
         }
-        (self.sessions.get_mut(key).unwrap(), is_new)
+
+        if !loaded_project {
+            if let Some((ref freq, total)) = self.merged_history() {
+                if let Ok(mut t) = tx.try_lock() {
+                    t.load_history(freq, total);
+                }
+            }
+        }
+        tx
     }
 
     /// Merge DB history with runtime-accumulated tool usage.
