@@ -125,8 +125,8 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
     <div class="stat-desc">Tokens Saved<br>Reduced via pruning & compression</div>
   </div>
   <div class="stat-box">
-    <div class="stat-number green" id="cost-saved">$0.00</div>
-    <div class="stat-desc">Est. Cost Saved<br>Based on $4/M tokens</div>
+    <div class="stat-number" id="today-cost">$0.00</div>
+    <div class="stat-desc">Today's Cost<br>API spend (24h)</div>
   </div>
 </div>
 
@@ -184,14 +184,26 @@ async function refresh() {
 
     const totalSaved = d.sessions.reduce((a,s) => a + (s.tokens_saved > 0 ? s.tokens_saved : 0), 0);
     document.getElementById('total-saved').textContent = fmt(totalSaved);
-    document.getElementById('cost-saved').textContent = '$'+(totalSaved * 0.000004).toFixed(4);
 
-    // Sessions
+    // Today's cost from spend log
+    const todayCost = d.today_cost_usd || 0;
+    const todaySaved = d.today_saved_usd || 0;
+    const costEl = document.getElementById('today-cost');
+    costEl.textContent = '$'+todayCost.toFixed(2);
+    if (todaySaved > 0.01) {
+      costEl.textContent += ' (-$'+todaySaved.toFixed(2)+')';
+      costEl.className = 'stat-number';
+    } else {
+      costEl.className = 'stat-number';
+    }
+
+    // Sessions (filter out empty ones)
+    const activeSessions = d.sessions.filter(s => s.request_count > 0);
     const sc = document.getElementById('sessions');
-    if (d.sessions.length === 0) {
+    if (activeSessions.length === 0) {
       sc.innerHTML = '<div class="empty">No active sessions<br>Start your agent with ANTHROPIC_BASE_URL pointed here</div>';
     } else {
-      sc.innerHTML = d.sessions.map(s => {
+      sc.innerHTML = activeSessions.map(s => {
         const proj = s.project && s.project !== 'unknown' ? s.project : s.key;
         const projDisplay = proj.length > 36 ? '...'+proj.slice(-33) : proj;
         const badge = s.pruning_suspended
