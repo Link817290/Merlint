@@ -31,10 +31,12 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
 .stats-banner { display:grid; grid-template-columns:repeat(4,1fr); gap:0; padding:0 24px; border-bottom:1px solid var(--border); }
 .stat-box { padding:16px 12px; text-align:center; border-right:1px solid var(--border); }
 .stat-box:last-child { border-right:none; }
-.stat-number { font-size:24px; font-weight:700; color:#fff; line-height:1.2; }
+.stat-number { font-size:24px; font-weight:700; color:#fff; line-height:1.2; transition:color .3s, text-shadow .5s; }
 .stat-number.green { color:var(--green); }
 .stat-number.purple { color:var(--purple); }
+.stat-number.flash { text-shadow:0 0 12px currentColor; }
 .stat-desc { font-size:11px; color:var(--dim); margin-top:4px; line-height:1.4; }
+.cost-saved { color:var(--green); font-size:14px; font-weight:600; display:block; margin-top:2px; transition:opacity .4s; }
 
 /* Grid */
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; padding:20px 24px; }
@@ -44,7 +46,9 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
 
 /* Sessions */
 .sessions-list { max-height:360px; overflow-y:auto; }
-.session { border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:8px; background:var(--bg); }
+.session { border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:8px; background:var(--bg); animation:slideIn .4s ease-out; transition:border-color .3s; }
+.session:hover { border-color:var(--accent); }
+@keyframes slideIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
 .session-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
 .session-key { font-family:monospace; font-size:11px; color:var(--purple); }
 .badge { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:600; }
@@ -58,7 +62,8 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
 
 /* Events */
 .events-list { max-height:280px; overflow-y:auto; font-size:11px; }
-.event { padding:6px 0; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:flex-start; }
+.event { padding:6px 0; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:flex-start; animation:fadeIn .3s ease-out; }
+@keyframes fadeIn { from{opacity:0} to{opacity:1} }
 .event:last-child { border-bottom:none; }
 .event-time { color:var(--dim); min-width:56px; flex-shrink:0; }
 .event-kind { min-width:56px; flex-shrink:0; font-weight:600; font-size:10px; text-transform:uppercase; padding:1px 6px; border-radius:4px; text-align:center; }
@@ -69,7 +74,7 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
 
 /* Activity */
 .activity-list { max-height:280px; overflow-y:auto; font-size:11px; }
-.activity { padding:5px 0; display:grid; grid-template-columns:56px 40px 56px 1fr; gap:8px; align-items:center; border-bottom:1px solid var(--border); }
+.activity { padding:5px 0; display:grid; grid-template-columns:56px 40px 56px 1fr; gap:8px; align-items:center; border-bottom:1px solid var(--border); animation:fadeIn .3s ease-out; }
 .activity:last-child { border-bottom:none; }
 .activity-time { color:var(--dim); }
 .activity-status { font-weight:600; }
@@ -126,6 +131,7 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
   </div>
   <div class="stat-box">
     <div class="stat-number" id="today-cost">$0.00</div>
+    <span class="cost-saved" id="today-saved"></span>
     <div class="stat-desc">Today's Cost<br>API spend (24h)</div>
   </div>
 </div>
@@ -173,28 +179,69 @@ function fmtTime(s) {
   return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
 }
 
+// Animated number counter
+const prevValues = {};
+function animateValue(el, newText, key) {
+  if (prevValues[key] === newText) return;
+  const changed = prevValues[key] !== undefined && prevValues[key] !== newText;
+  prevValues[key] = newText;
+  el.textContent = newText;
+  if (changed) {
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 600);
+  }
+}
+
+// Smooth number counting animation
+function countUp(el, target, key, prefix, suffix, decimals) {
+  prefix = prefix || '';
+  suffix = suffix || '';
+  decimals = decimals || 0;
+  const prev = prevValues[key] || 0;
+  if (prev === target) return;
+  prevValues[key] = target;
+  const start = prev;
+  const duration = 800;
+  const startTime = performance.now();
+  function tick(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+    const current = start + (target - start) * eased;
+    el.textContent = prefix + current.toFixed(decimals) + suffix;
+    if (progress < 1) requestAnimationFrame(tick);
+    else {
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 600);
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
 async function refresh() {
   try {
     const r = await fetch('/merlint/status');
     const d = await r.json();
 
     document.getElementById('uptime').textContent = fmtTime(d.uptime_secs);
-    document.getElementById('total-req').textContent = d.total_requests;
-    document.getElementById('session-count').textContent = d.session_count;
+    animateValue(document.getElementById('total-req'), d.total_requests.toString(), 'reqs');
+    animateValue(document.getElementById('session-count'), d.session_count.toString(), 'sessions');
 
     const totalSaved = d.sessions.reduce((a,s) => a + (s.tokens_saved > 0 ? s.tokens_saved : 0), 0);
-    document.getElementById('total-saved').textContent = fmt(totalSaved);
+    animateValue(document.getElementById('total-saved'), fmt(totalSaved), 'saved');
 
-    // Today's cost from spend log
+    // Today's cost with counting animation
     const todayCost = d.today_cost_usd || 0;
     const todaySaved = d.today_saved_usd || 0;
     const costEl = document.getElementById('today-cost');
-    costEl.textContent = '$'+todayCost.toFixed(2);
+    countUp(costEl, todayCost, 'cost', '$', '', 2);
+
+    const savedEl = document.getElementById('today-saved');
     if (todaySaved > 0.01) {
-      costEl.textContent += ' (-$'+todaySaved.toFixed(2)+')';
-      costEl.className = 'stat-number';
+      savedEl.textContent = 'saved $'+todaySaved.toFixed(2);
+      savedEl.style.opacity = '1';
     } else {
-      costEl.className = 'stat-number';
+      savedEl.style.opacity = '0';
     }
 
     // Sessions (filter out empty ones)
@@ -217,6 +264,9 @@ async function refresh() {
             <div class="session-item"><span class="session-item-label">Saved</span><span class="session-item-val green">${fmt(savedVal)} tokens</span></div>
             <div class="session-item"><span class="session-item-label">Tools Tracked</span><span class="session-item-val">${s.tools_tracked}</span></div>
             <div class="session-item"><span class="session-item-label">Cache Hit</span><span class="session-item-val">${s.api_cache_hit_rate}%</span></div>
+          </div>
+          <div class="bar-bg"><div class="bar-fill green" style="width:${Math.min(s.api_cache_hit_rate,100)}%"></div></div>
+          <div class="session-grid" style="margin-top:4px">
             <div class="session-item"><span class="session-item-label">Total Tokens</span><span class="session-item-val">${fmt(s.total_tokens)}</span></div>
             <div class="session-item"><span class="session-item-label">Total Latency</span><span class="session-item-val">${s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms'}</span></div>
           </div>
