@@ -1,6 +1,6 @@
 [package]
 name = "merlint"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "Agent token optimizer — diagnose, optimize, and monitor LLM agent efficiency"
 license = "MIT"
