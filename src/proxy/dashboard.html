@@ -252,12 +252,19 @@ let prevEvents = [], prevActivity = [];
 //
 //   never-active → session was preloaded from spend.db but hasn't seen a
 //                  live request yet → cache is almost certainly cold
-//   warm (N:SS)  → still inside the 5-min window from last_activity
+//   warm (N:SS)  → still inside the 5-min window from the anchor time
 //   expiring     → < 1 minute left, nudge the user to send something
 //   cold         → window elapsed → next request will pay cache_creation
+//
+// Anchor preference:
+//   1. last_request_at  — set at upstream-forward time, most accurate
+//   2. last_activity    — fallback: set after the full response is
+//                         collected (lags by the streaming duration,
+//                         but still good enough if the request stamp is
+//                         somehow missing)
 const CACHE_TTL_SECS = 300;
 function cacheState(session) {
-  const ts = session.last_activity;
+  const ts = session.last_request_at || session.last_activity;
   if (!ts) {
     return { label: '—', cls: 'cache-idle', tip: 'no live activity yet' };
   }
@@ -334,7 +341,11 @@ function buildConvRows(sessions) {
     const cp = totalPrompt > 0 ? Math.round(cacheRead / totalPrompt * 100) : 0;
     const saved = s.tokens_saved > 0 ? `<span class="conv-saved">-${fmt(s.tokens_saved)} saved</span>` : '';
     const cs = cacheState(s);
-    const cacheCountdown = `<span class="cache-ttl ${cs.cls}" data-last-activity="${s.last_activity || ''}" title="${cs.tip}">${cs.label}</span>`;
+    // Carry whichever anchor we actually used (prefer last_request_at, the
+    // upstream-forward timestamp, over last_activity, the trace-entry one)
+    // so the 1-second ticker can re-evaluate without hitting /status again.
+    const anchorTs = s.last_request_at || s.last_activity || '';
+    const cacheCountdown = `<span class="cache-ttl ${cs.cls}" data-cache-anchor="${anchorTs}" title="${cs.tip}">${cs.label}</span>`;
     return `<div class="conv-item">
       <span class="conv-id">#${i+1} ${badge}${histBadge}</span>
       <div class="conv-detail">
@@ -526,7 +537,7 @@ async function refresh() {
                     const cs = cacheState(s);
                     ttlSpan.textContent = cs.label;
                     ttlSpan.title = cs.tip;
-                    ttlSpan.setAttribute('data-last-activity', s.last_activity || '');
+                    ttlSpan.setAttribute('data-cache-anchor', s.last_request_at || s.last_activity || '');
                     ttlSpan.classList.remove('cache-warm','cache-expiring','cache-cold','cache-idle');
                     ttlSpan.classList.add(cs.cls);
                   }
@@ -567,13 +578,15 @@ setInterval(refresh, 2000);
 
 // Tick all visible cache countdowns once a second. The full /status poll
 // runs every 2s, but the user expects the "4:32" label to count down like
-// a timer, not step by 2. We keep a `data-last-activity` attribute on each
+// a timer, not step by 2. We keep a `data-cache-anchor` attribute on each
 // ttl span so this cheap tick can recompute without hitting the network.
 setInterval(() => {
-  document.querySelectorAll('.cache-ttl[data-last-activity]').forEach(el => {
-    const ts = el.getAttribute('data-last-activity');
+  document.querySelectorAll('.cache-ttl[data-cache-anchor]').forEach(el => {
+    const ts = el.getAttribute('data-cache-anchor');
     if (!ts) return;
-    const cs = cacheState({ last_activity: ts });
+    // Feed the anchor as last_request_at so cacheState uses its preferred
+    // branch (same one the server already picked when rendering).
+    const cs = cacheState({ last_request_at: ts });
     if (el.textContent !== cs.label) {
       el.textContent = cs.label;
       el.title = cs.tip;

@@ -319,6 +319,17 @@ async fn handle_request(
 
     forward_req = forward_req.body(final_body.to_vec());
 
+    // Stamp the slot with the request-start time BEFORE we actually send
+    // upstream. This is what the dashboard countdown uses as the cache TTL
+    // anchor — resetting here means the 5-minute timer restarts the moment
+    // a new request goes out, not 5-30 seconds later when the full response
+    // has been collected. Only meaningful for chat sessions; non-chat paths
+    // don't feed the dashboard cache countdown.
+    if is_chat {
+        let mut store_guard = store.lock().await;
+        store_guard.mark_request_started(&session_key);
+    }
+
     let start = Instant::now();
     let response = match forward_req.send().await {
         Ok(r) => r,
@@ -539,12 +550,13 @@ async fn handle_status(
         {
             continue;
         }
-        let (key, session, tx_opt, project, historical) = (
+        let (key, session, tx_opt, project, historical, slot_last_request_at) = (
             slot.key,
             slot.session,
             slot.transformer,
             slot.project_path,
             slot.historical,
+            slot.last_request_at,
         );
         // Live values from this proxy run. Note: Anthropic's `input_tokens`
         // is the FRESH (non-cached) portion only — true prompt size is
@@ -617,6 +629,11 @@ async fn handle_status(
         }
 
         let last_activity = session.entries.last().map(|e| e.timestamp.to_rfc3339());
+        // The dashboard cache countdown prefers `last_request_at` because it
+        // fires at the moment we forward upstream — matching Anthropic's own
+        // TTL reset point. Falls back to the trace entry timestamp if no
+        // live request has been stamped yet this run.
+        let last_request_at = slot_last_request_at.map(|t| t.to_rfc3339());
 
         // Estimated cash value of the cache hits for this session. We don't
         // know the exact model mix per historical row, so we price it against
@@ -631,6 +648,7 @@ async fn handle_status(
             "id": session.id,
             "started_at": session.started_at.to_rfc3339(),
             "last_activity": last_activity,
+            "last_request_at": last_request_at,
             "request_count": total_requests,
             "live_request_count": live_requests,
             "historical_request_count": hist_requests,

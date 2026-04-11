@@ -46,6 +46,7 @@ pub struct SessionSnapshot<'a> {
     pub transformer: Option<&'a SharedTransformer>,
     pub project_path: Option<&'a str>,
     pub historical: Option<&'a HistoricalSummary>,
+    pub last_request_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Manages multiple concurrent sessions, each with its own trace and transformer.
@@ -81,6 +82,14 @@ pub struct SessionSlot {
     /// creation time. Lets stats persist across proxy restarts — every time
     /// a conversation resumes, its lifetime stats come with it.
     pub historical: Option<HistoricalSummary>,
+    /// Wall-clock moment we last started forwarding a chat request upstream.
+    /// Closer to Anthropic's own 5-minute cache TTL reset point than
+    /// `session.entries.last().timestamp`, which only fires AFTER the full
+    /// response has been collected — for long streaming responses the trace
+    /// entry lags the real cache refresh by the full response duration, so
+    /// the dashboard countdown would decrement visibly during streaming
+    /// instead of snapping back. Using the request-start time fixes that.
+    pub last_request_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl SessionStore {
@@ -172,6 +181,7 @@ impl SessionStore {
                 transformer: new_transformer,
                 project_path,
                 historical: None,
+                last_request_at: None,
             });
         } else {
             let slot = self.sessions.get_mut(key).unwrap();
@@ -294,8 +304,19 @@ impl SessionStore {
                 transformer: s.transformer.as_ref(),
                 project_path: s.project_path.as_deref(),
                 historical: s.historical.as_ref(),
+                last_request_at: s.last_request_at,
             })
             .collect()
+    }
+
+    /// Stamp a session slot with the wall-clock moment we started forwarding
+    /// its most recent chat request upstream. Used as the cache-TTL anchor
+    /// on the dashboard countdown so the UI resets as soon as the user hits
+    /// send, instead of waiting for the full streaming response to finish.
+    pub fn mark_request_started(&mut self, key: &str) {
+        if let Some(slot) = self.sessions.get_mut(key) {
+            slot.last_request_at = Some(chrono::Utc::now());
+        }
     }
 
     pub fn session_count(&self) -> usize {
@@ -339,6 +360,7 @@ impl SessionStore {
                     transformer: None,
                     project_path: Some(row.project_path.clone()),
                     historical: Some(row.summary),
+                    last_request_at: None,
                 },
             );
             inserted += 1;

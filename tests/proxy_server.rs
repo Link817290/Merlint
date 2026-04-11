@@ -637,6 +637,23 @@ async fn test_session_stats_persist_across_restart() {
         .unwrap();
     assert_eq!(attached.historical.unwrap().request_count, 42);
 
+    // mark_request_started should stamp the slot's cache-TTL anchor so the
+    // dashboard countdown resets at upstream-forward time, not at
+    // response-completion time.
+    let before = chrono::Utc::now();
+    store.mark_request_started("sys-00000000-00000000");
+    let after = chrono::Utc::now();
+    let stamped = store
+        .all_slots()
+        .into_iter()
+        .find(|s| s.key == "sys-00000000-00000000")
+        .unwrap();
+    let ts = stamped.last_request_at.expect("stamp should be set");
+    assert!(ts >= before && ts <= after, "timestamp must fall inside the call window");
+
+    // mark_request_started on an unknown key is a no-op, not a panic.
+    store.mark_request_started("sys-does-not-exist");
+
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
