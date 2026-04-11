@@ -23,7 +23,7 @@ banner() {
     echo -e "${C}    ║${N}       ${W}/|  |\\${N}    ${G}|_| |_| |_|\\___||_|_|_| |_|\\__|${N} ${C}║${N}"
     echo -e "${C}    ║${N}      ${Y}*---+${M}~${N}                                        ${C}║${N}"
     echo -e "${C}    ║${N}                                                   ${C}║${N}"
-    echo -e "${C}    ║${N}  ${D}  Agent Token Optimizer                  v0.1.8${N}  ${C}║${N}"
+    echo -e "${C}    ║${N}  ${D}  Agent Token Optimizer                  v0.1.9${N}  ${C}║${N}"
     echo -e "${C}    ╚═══════════════════════════════════════════════════╝${N}"
     echo ""
 }
