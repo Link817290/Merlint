@@ -302,8 +302,11 @@ function updateText(parent, sel, val) {
 
 // Build project card HTML (only used for first render)
 function buildProjectHTML(projPath, projDisplay, sessions, totReq, totTokens, totPrompt, totCompletion, totCacheRead, totCacheCreation, totSaved, totCacheSavingsUsd, cachePct, convCount) {
+  // Show just the number — the "Cache Savings" label below already
+  // answers "savings of what". Dropping the redundant "saved" suffix
+  // keeps the stat value on a single line at a consistent font size.
   const cacheSavingsLabel = totCacheSavingsUsd > 0.005
-    ? `$${totCacheSavingsUsd.toFixed(2)} saved`
+    ? `$${totCacheSavingsUsd.toFixed(2)}`
     : '—';
   const cacheHitTooltip = `${fmt(totCacheRead)} of ${fmt(totCacheRead + totCacheCreation)} cacheable tokens served from cache (reads / (reads + writes))`;
   return `<div class="project-header">
@@ -540,7 +543,7 @@ async function refresh() {
           updateText(el, '.pv-req', totReq);
           updateText(el, '.pv-tok', fmt(totTokens));
           const savingsLabel = totCacheSavingsUsd > 0.005
-            ? '$' + totCacheSavingsUsd.toFixed(2) + ' saved'
+            ? '$' + totCacheSavingsUsd.toFixed(2)
             : '—';
           updateText(el, '.pv-savings', savingsLabel);
           updateText(el, '.pv-cache', cachePct + '%');
