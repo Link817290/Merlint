@@ -27,22 +27,6 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 .status-label { color:var(--green); font-weight:600; font-size:13px; }
 .uptime-text { color:var(--dim); font-size:11px; margin-top:4px; }
-.notify-toggle {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--dim);
-  padding: 3px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 10px;
-  font-family: inherit;
-  margin-top: 6px;
-  transition: all .2s;
-}
-.notify-toggle:hover { border-color: var(--green); color: var(--green); }
-.notify-toggle.enabled { color: var(--green); border-color: rgba(63,185,80,.5); background: rgba(63,185,80,.08); }
-.notify-toggle.denied { color: #ff7b72; border-color: rgba(255,123,114,.5); cursor: not-allowed; }
-.notify-toggle.denied:hover { border-color: rgba(255,123,114,.5); color: #ff7b72; }
 
 /* Stats banner */
 .stats-banner { display:grid; grid-template-columns:repeat(4,1fr); gap:0; padding:0 24px; border-bottom:1px solid var(--border); }
@@ -154,7 +138,6 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
   <div class="status-area">
     <div class="status-line"><span class="pulse"></span><span class="status-label">Running</span></div>
     <div class="uptime-text">Uptime: <span id="uptime">0s</span></div>
-    <button id="notify-toggle" class="notify-toggle" title="Click to enable desktop notifications for cache expiry">🔔 Off</button>
   </div>
 </div>
 
@@ -401,7 +384,7 @@ function convDetailFields(s, cp, cacheRead, totalPrompt, cacheTitle) {
     breakdown: fmt(totalPrompt) + 'p / ' + fmt(s.completion_tokens || 0) + 'c',
     cache: 'cache: ' + fmt(cacheRead) + ' (' + cp + '%)',
     latency: latStr,
-    countdown: `<span class="cache-ttl ${cs.cls}" data-cache-anchor="${anchorTs}" data-session-key="${s.key || ''}" data-project-name="${(s.project || s.key || '').replace(/"/g, '&quot;')}" title="${cs.tip}">${cs.label}</span>`,
+    countdown: `<span class="cache-ttl ${cs.cls}" data-cache-anchor="${anchorTs}" title="${cs.tip}">${cs.label}</span>`,
     saved: s.tokens_saved > 0 ? `<span class="conv-saved">-${fmt(s.tokens_saved)} saved</span>` : '',
     _state: cs,
     _anchor: anchorTs,
@@ -693,107 +676,6 @@ async function refresh() {
 refresh();
 setInterval(refresh, 2000);
 
-// ===== Desktop notifications for cache expiry =====
-//
-// The dashboard countdown is only useful if the user is looking at the
-// page. Hook the browser's Web Notification API into the cache state
-// machine so the user can walk away and still get an OS-level warning
-// before the 5-minute TTL burns through. Purely front-end, no API spend.
-//
-// Transitions we care about:
-//   warm → expiring   "⏱ 1:00 left, send something to keep it warm"
-//   expiring → cold   "🧊 cache expired, next request rebuilds (~$1.44)"
-// Everything else (warm → warm, cold → warm, etc.) silently updates the
-// internal state without firing a notification.
-
-const cacheNotifyPhase = {}; // session_key → last observed phase
-
-function initialNotifyState(el, cs) {
-  // First time we see a session, just record its current phase so we don't
-  // fire on page load — the user didn't do anything, there's no news.
-  const key = el.getAttribute('data-session-key') || '';
-  if (!cacheNotifyPhase[key]) {
-    cacheNotifyPhase[key] = cs.cls;
-  }
-}
-
-function maybeFireCacheNotification(el, cs) {
-  if (!('Notification' in window)) return;
-  if (Notification.permission !== 'granted') return;
-  const key = el.getAttribute('data-session-key') || '';
-  if (!key) return;
-  const prev = cacheNotifyPhase[key];
-  const cur = cs.cls;
-  if (prev === cur) return;
-  cacheNotifyPhase[key] = cur;
-  // Suppress the page-load edge — initialNotifyState should have seeded
-  // the map already, but fall through safely if it hasn't.
-  if (prev === undefined) return;
-
-  const project = el.getAttribute('data-project-name') || 'session';
-
-  if (cur === 'cache-expiring' && prev === 'cache-warm') {
-    new Notification(`⏱ ${project} cache expiring`, {
-      body: 'Less than 1 minute left — send a message to keep it warm',
-      tag: `merlint-${key}-expiring`,
-      icon: '/merlint/favicon.ico',
-      silent: false,
-    });
-  } else if (cur === 'cache-cold' && (prev === 'cache-warm' || prev === 'cache-expiring')) {
-    new Notification(`🧊 ${project} cache expired`, {
-      body: 'Next request will rebuild the cache (~$1.44 on Opus)',
-      tag: `merlint-${key}-cold`,
-      icon: '/merlint/favicon.ico',
-      silent: false,
-    });
-  }
-  // warm ← cold / expiring: user sent a message, reset state silently.
-}
-
-// Permission UI — a small toggle in the header that reflects the current
-// Notification.permission state and prompts on click.
-const notifyBtn = document.getElementById('notify-toggle');
-function updateNotifyBtn() {
-  if (!notifyBtn) return;
-  if (!('Notification' in window)) {
-    notifyBtn.style.display = 'none';
-    return;
-  }
-  if (Notification.permission === 'granted') {
-    notifyBtn.className = 'notify-toggle enabled';
-    notifyBtn.textContent = '🔔 On';
-    notifyBtn.title = 'Desktop notifications enabled for cache expiry';
-  } else if (Notification.permission === 'denied') {
-    notifyBtn.className = 'notify-toggle denied';
-    notifyBtn.textContent = '🔕 Blocked';
-    notifyBtn.title = 'Notifications blocked — enable them for this page in your browser settings';
-  } else {
-    notifyBtn.className = 'notify-toggle';
-    notifyBtn.textContent = '🔔 Off';
-    notifyBtn.title = 'Click to enable desktop notifications for cache expiry';
-  }
-}
-if (notifyBtn) {
-  notifyBtn.addEventListener('click', () => {
-    if (!('Notification' in window)) return;
-    if (Notification.permission === 'default') {
-      Notification.requestPermission().then((res) => {
-        updateNotifyBtn();
-        if (res === 'granted') {
-          // Welcome ping so the user sees the notification chrome once
-          // and knows the wiring works.
-          new Notification('merlint', {
-            body: 'Desktop notifications enabled. You\'ll get a heads-up 1 minute before cache expiry.',
-            tag: 'merlint-welcome',
-            icon: '/merlint/favicon.ico',
-          });
-        }
-      });
-    }
-  });
-  updateNotifyBtn();
-}
-
 // Tick all visible cache countdowns once a second. The full /status poll
 // runs every 2s, but the user expects the "4:32" label to count down like
 // a timer, not step by 2. We keep a `data-cache-anchor` attribute on each
@@ -805,14 +687,12 @@ setInterval(() => {
     // Feed the anchor as last_request_at so cacheState uses its preferred
     // branch (same one the server already picked when rendering).
     const cs = cacheState({ last_request_at: ts });
-    initialNotifyState(el, cs);
     if (el.textContent !== cs.label) {
       el.textContent = cs.label;
       el.title = cs.tip;
       el.classList.remove('cache-warm','cache-expiring','cache-cold','cache-idle');
       el.classList.add(cs.cls);
     }
-    maybeFireCacheNotification(el, cs);
   });
 }, 1000);
 </script>

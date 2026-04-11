@@ -86,6 +86,20 @@ pub async fn run_proxy(
         }
     }
 
+    // Opt-in desktop notification loop. Watches session cache states and
+    // fires a macOS/Linux/Windows native notification when a session is
+    // about to lose its Anthropic prompt cache — the single biggest
+    // preventable cost for idle-while-context-warm workflows. Off by
+    // default; enable with `MERLINT_DESKTOP_NOTIFY=1` in the shell that
+    // launches the proxy (or in `merlint up`'s env).
+    if super::notify::is_enabled() {
+        let store_for_notify = store.clone();
+        tokio::spawn(async move {
+            super::notify::cache_notification_loop(store_for_notify).await;
+        });
+        info!("desktop cache notifications ENABLED (MERLINT_DESKTOP_NOTIFY=1)");
+    }
+
     let budget = BudgetConfig::from_env();
     if budget.has_limits() {
         info!("budget limits: daily=${:.2}, session=${:.2}",
@@ -635,12 +649,31 @@ async fn handle_status(
         // live request has been stamped yet this run.
         let last_request_at = slot_last_request_at.map(|t| t.to_rfc3339());
 
-        // Estimated cash value of the cache hits for this session. We don't
-        // know the exact model mix per historical row, so we price it against
-        // Sonnet 4 as a conservative default — Opus users will see a larger
-        // real-world savings and Haiku users a smaller one, but the order of
-        // magnitude is right and the display avoids over-promising.
-        let cache_savings_usd = cost_calc.cache_savings("claude-sonnet-4-6", total_cache_read);
+        // Cache savings dollars: net of cache_read discount minus cache write
+        // overhead. Priced against Sonnet 4 because historical rows don't
+        // retain a model column on the summary — Opus conversations show a
+        // larger real saving, Haiku a smaller one, but the order of magnitude
+        // is right and the narrative stays honest.
+        let breakdown = cost_calc.cache_breakdown(
+            "claude-sonnet-4-6",
+            total_fresh_input,
+            total_cache_read,
+            total_cache_creation,
+        );
+
+        // Formula B cache hit rate: `reads / (reads + writes)` — "of the
+        // cacheable content, how much actually came from cache". Reaches
+        // ~100% as a conversation extends because subsequent turns just
+        // read from an already-built cache. This is the number that tells
+        // the "your conversation reused 99% of its context" story cleanly.
+        let cache_reuse_pct: u64 = {
+            let denom = total_cache_read + total_cache_creation;
+            if denom > 0 {
+                ((total_cache_read as f64 / denom as f64) * 100.0).round() as u64
+            } else {
+                0
+            }
+        };
 
         sessions.push(serde_json::json!({
             "key": key,
@@ -662,8 +695,12 @@ async fn handle_status(
             "cache_creation_tokens": total_cache_creation,
             "total_latency_ms": total_latency,
             "tokens_saved": tokens_saved,
-            "cache_savings_usd": cache_savings_usd,
+            "cache_savings_usd": breakdown.savings_usd,
+            "cache_savings_pct": breakdown.savings_pct.round() as i64,
+            "cache_hypothetical_usd": breakdown.hypothetical_usd,
+            "cache_reuse_pct": cache_reuse_pct,
             "tools_tracked": tools_tracked,
+            // A = cache_read / total_prompt — kept for backward compat
             "api_cache_hit_rate": api_cache_hit_rate,
             "pruning_suspended": pruning_suspended,
         }));
@@ -715,19 +752,25 @@ async fn handle_status(
     //   Today's Cost   $89.31
     //   saved          $27.00 today from cache
     // i.e. "you spent $89 today but would've spent $116 without the cache".
-    let (today_cost, today_cache_savings) = if let Some(ref sl) = spend_log {
+    let (today_cost, today_cache_savings, today_cache_savings_pct) = if let Some(ref sl) = spend_log {
         let log = sl.lock().await;
         if let Ok(summary) = log.summary_last_days(1) {
-            let savings = cost_calc.cache_savings(
+            let breakdown = cost_calc.cache_breakdown(
                 "claude-sonnet-4-6",
+                summary.total_fresh_input_tokens.max(0) as u64,
                 summary.total_cache_read_tokens.max(0) as u64,
+                summary.total_cache_creation_tokens.max(0) as u64,
             );
-            (summary.total_cost_usd, savings)
+            (
+                summary.total_cost_usd,
+                breakdown.savings_usd,
+                breakdown.savings_pct.round() as i64,
+            )
         } else {
-            (0.0, 0.0)
+            (0.0, 0.0, 0)
         }
     } else {
-        (0.0, 0.0)
+        (0.0, 0.0, 0)
     };
 
     // Banner-level "Total Requests" sums the lifetime request counts of the
@@ -752,6 +795,7 @@ async fn handle_status(
         "session_count": sessions.len(),
         "today_cost_usd": today_cost,
         "today_cache_savings_usd": today_cache_savings,
+        "today_cache_savings_pct": today_cache_savings_pct,
         "sessions": sessions,
         "activity": activity,
         "events": events,
