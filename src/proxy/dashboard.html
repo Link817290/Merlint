@@ -59,12 +59,16 @@ body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',mon
 .project-stat-val.flash, .tb-prompt.flash, .tb-comp.flash, .tb-acache.flash, .tb-pruned.flash, .pm-count.flash { text-shadow:0 0 8px currentColor; }
 .project-stat-val.green { color:var(--green); }
 .project-stat-label { color:var(--dim); font-size:9px; }
-.conv-list { padding:4px 12px 8px; }
-.conv-item { display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:10px; border-bottom:1px solid rgba(48,54,61,.5); }
+.conv-list { padding:4px 12px 10px; border-top:1px solid var(--border); }
+.conv-list-label { font-size:9px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin:4px 0 4px; }
+.conv-item { display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:10px; border-bottom:1px solid rgba(48,54,61,.5); }
 .conv-item:last-child { border-bottom:none; }
-.conv-id { color:var(--dim); font-family:monospace; }
-.conv-detail { display:flex; gap:10px; }
+.conv-id { color:var(--dim); font-family:monospace; min-width:60px; }
+.conv-id .badge-hist { background:rgba(139,148,158,.15); color:var(--dim); font-size:9px; padding:1px 5px; border-radius:3px; margin-left:4px; }
+.conv-detail { display:flex; gap:10px; flex-wrap:wrap; }
 .conv-detail span { color:var(--text); }
+.conv-detail .conv-cached { color:var(--yellow); }
+.conv-detail .conv-saved { color:var(--green); }
 .badge { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:600; }
 .badge.paused { background:rgba(63,185,80,.15); color:var(--green); }
 .badge.active { background:rgba(124,58,237,.15); color:var(--purple); }
@@ -260,24 +264,47 @@ function buildProjectHTML(projPath, projDisplay, sessions, totReq, totTokens, to
     <div class="project-stat"><div class="project-stat-val pv-req">${totReq}</div><div class="project-stat-label">Requests</div></div>
     <div class="project-stat"><div class="project-stat-val pv-tok">${fmt(totTokens)}</div><div class="project-stat-label">Total Tokens</div></div>
     <div class="project-stat"><div class="project-stat-val green pv-pruned">${fmt(totSaved)}</div><div class="project-stat-label">Pruned</div></div>
-    <div class="project-stat"><div class="project-stat-val pv-cache">${cachePct}%</div><div class="project-stat-label">API Cache</div></div>
+    <div class="project-stat" title="${fmt(totCacheRead)} of ${fmt(totPrompt)} prompt tokens served from Anthropic's prompt cache"><div class="project-stat-val pv-cache">${cachePct}%</div><div class="project-stat-label">Cache Hit</div></div>
   </div>
   <div class="token-breakdown">
-    <span class="tb-prompt">prompt: ${fmt(totPrompt)}</span>
+    <span class="tb-prompt" title="Total prompt input across this project (fresh + cached)">prompt: ${fmt(totPrompt)}</span>
     <span class="tb-comp">completion: ${fmt(totCompletion)}</span>
-    <span class="cached-tok tb-acache" title="Anthropic API prompt caching">api_cache: ${fmt(totCacheRead)} (${cachePct}%)</span>
-    <span class="saved-tok tb-pruned" title="Merlint tool pruning & compression">pruned: ${fmt(totSaved)}</span>
+    <span class="cached-tok tb-acache" title="Tokens served from Anthropic's prompt cache (subset of prompt total)">cache: ${fmt(totCacheRead)} (${cachePct}%)</span>
+    <span class="saved-tok tb-pruned" title="Tokens saved by merlint's tool pruning & compression">pruned: ${fmt(totSaved)}</span>
   </div>
   <div class="bar-bg" style="margin:0 12px"><div class="bar-fill green" style="width:${Math.min(cachePct,100)}%"></div></div>
-  ${convCount > 1 ? '<div class="conv-list">' + buildConvRows(sessions) + '</div>' : ''}`;
+  <div class="conv-list">
+    <div class="conv-list-label">Sessions (${convCount})</div>
+    ${buildConvRows(sessions)}
+  </div>`;
 }
 
 function buildConvRows(sessions) {
   return sessions.map((s, i) => {
     const badge = s.pruning_suspended ? '<span class="badge paused">CACHE</span>' : '<span class="badge active">PRUNE</span>';
+    // Show "HIST" badge when the row carries over stats from a prior proxy run
+    // but has not yet received any live requests this run.
+    const liveReq = s.live_request_count || 0;
+    const histReq = s.historical_request_count || 0;
+    const histBadge = (histReq > 0 && liveReq === 0)
+      ? '<span class="badge-hist" title="Carried over from prior proxy run">HIST</span>'
+      : '';
     const latStr = s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms';
-    const cp = (s.prompt_tokens||0) > 0 ? Math.round((s.cache_read_tokens||0)/s.prompt_tokens*100) : 0;
-    return `<div class="conv-item"><span class="conv-id">#${i+1} ${badge}</span><div class="conv-detail"><span>${s.request_count} req</span><span>${fmt(s.total_tokens)} tok</span><span>${cp}% api_cache</span><span>${latStr}</span></div></div>`;
+    const cacheRead = s.cache_read_tokens || 0;
+    const totalPrompt = s.prompt_tokens || 0;
+    const cp = totalPrompt > 0 ? Math.round(cacheRead / totalPrompt * 100) : 0;
+    const saved = s.tokens_saved > 0 ? `<span class="conv-saved">-${fmt(s.tokens_saved)} saved</span>` : '';
+    return `<div class="conv-item">
+      <span class="conv-id">#${i+1} ${badge}${histBadge}</span>
+      <div class="conv-detail">
+        <span title="requests">${s.request_count} req</span>
+        <span title="total tokens (prompt+completion)">${fmt(s.total_tokens)} tok</span>
+        <span title="total prompt / completion">${fmt(totalPrompt)}p / ${fmt(s.completion_tokens||0)}c</span>
+        <span class="conv-cached" title="${fmt(cacheRead)} of ${fmt(totalPrompt)} prompt tokens served from Anthropic's API cache">cache: ${fmt(cacheRead)} (${cp}%)</span>
+        <span title="total latency">${latStr}</span>
+        ${saved}
+      </div>
+    </div>`;
   }).join('');
 }
 
@@ -381,11 +408,13 @@ async function refresh() {
 
         const totReq = sessions.reduce((a,s) => a + s.request_count, 0);
         const totTokens = sessions.reduce((a,s) => a + s.total_tokens, 0);
+        // prompt_tokens is now the TRUE total prompt (fresh + cached + cache_creation)
         const totPrompt = sessions.reduce((a,s) => a + (s.prompt_tokens||0), 0);
         const totCompletion = sessions.reduce((a,s) => a + (s.completion_tokens||0), 0);
         const totCacheRead = sessions.reduce((a,s) => a + (s.cache_read_tokens||0), 0);
         const totSaved = sessions.reduce((a,s) => a + Math.max(0, s.tokens_saved), 0);
         const convCount = sessions.length;
+        // Cache hit rate denominator is the true prompt total, so cachePct stays in [0,100].
         const cachePct = totPrompt > 0 ? Math.round(totCacheRead / totPrompt * 100) : 0;
 
         let el = document.getElementById(groupKey);
@@ -409,34 +438,39 @@ async function refresh() {
           updateText(el, '.pm-count', convCount + ' conversation' + (convCount>1?'s':''));
           const bar = el.querySelector('.bar-fill');
           if (bar) bar.style.width = Math.min(cachePct,100) + '%';
-          // Update conversation rows only if count changed
-          const convList = el.querySelector('.conv-list');
-          if (convCount > 1) {
-            const convHTML = buildConvRows(sessions);
-            if (!convList) {
-              const div = document.createElement('div');
-              div.className = 'conv-list';
-              div.innerHTML = convHTML;
-              el.appendChild(div);
-            } else if (convList.children.length !== convCount) {
+
+          // Always render the per-session list. A dedicated label row +
+          // one row per session so users can see per-conversation stats
+          // even with a single active conversation.
+          let convList = el.querySelector('.conv-list');
+          const convHTML = `<div class="conv-list-label">Sessions (${convCount})</div>` + buildConvRows(sessions);
+          if (!convList) {
+            convList = document.createElement('div');
+            convList.className = 'conv-list';
+            convList.innerHTML = convHTML;
+            el.appendChild(convList);
+          } else {
+            // Count includes the label row, so we expect convCount + 1 children.
+            if (convList.children.length !== convCount + 1) {
               convList.innerHTML = convHTML;
             } else {
-              // Update existing conv rows in place
+              // Update label + in-place row refresh.
+              const labelEl = convList.firstElementChild;
+              if (labelEl) labelEl.textContent = `Sessions (${convCount})`;
               sessions.forEach((s, i) => {
-                const row = convList.children[i];
+                const row = convList.children[i + 1];
                 if (row) {
                   const spans = row.querySelectorAll('.conv-detail span');
                   if (spans[0]) spans[0].textContent = s.request_count + ' req';
                   if (spans[1]) spans[1].textContent = fmt(s.total_tokens) + ' tok';
+                  if (spans[2]) spans[2].textContent = fmt(s.prompt_tokens||0) + 'p / ' + fmt(s.completion_tokens||0) + 'c';
                   const cp = (s.prompt_tokens||0) > 0 ? Math.round((s.cache_read_tokens||0)/s.prompt_tokens*100) : 0;
-                  if (spans[2]) spans[2].textContent = cp + '% api_cache';
+                  if (spans[3]) spans[3].textContent = cp + '% cache';
                   const lt = s.total_latency_ms > 1000 ? (s.total_latency_ms/1000).toFixed(1)+'s' : s.total_latency_ms+'ms';
-                  if (spans[3]) spans[3].textContent = lt;
+                  if (spans[4]) spans[4].textContent = lt;
                 }
               });
             }
-          } else if (convList) {
-            convList.remove();
           }
         }
       });
