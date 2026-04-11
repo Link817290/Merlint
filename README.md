@@ -86,6 +86,12 @@ merlint-stop      # Stop proxy
 merlint-start     # Restart proxy
 ```
 
+## Architecture
+
+<p align="center">
+  <img src="assets/architecture.png" alt="merlint architecture" width="800">
+</p>
+
 ## Features
 
 ### Real-time Proxy Optimization
