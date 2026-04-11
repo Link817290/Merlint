@@ -174,9 +174,7 @@ async fn handle_request(
 
     // Extract project path for display (only on first request)
     let project_path = if is_chat {
-        let pp = extract_project_path(&body_bytes);
-        info!("Session routing: key={}, project={:?}", session_key, pp);
-        pp
+        extract_project_path(&body_bytes)
     } else {
         None
     };
