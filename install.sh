@@ -23,7 +23,7 @@ banner() {
     echo -e "${C}    ║${N}       ${W}/|  |\\${N}    ${G}|_| |_| |_|\\___||_|_|_| |_|\\__|${N} ${C}║${N}"
     echo -e "${C}    ║${N}      ${Y}*---+${M}~${N}                                        ${C}║${N}"
     echo -e "${C}    ║${N}                                                   ${C}║${N}"
-    echo -e "${C}    ║${N}  ${D}  Agent Token Optimizer                  v0.1.4${N}  ${C}║${N}"
+    echo -e "${C}    ║${N}  ${D}  Agent Token Optimizer                  v0.1.8${N}  ${C}║${N}"
     echo -e "${C}    ╚═══════════════════════════════════════════════════╝${N}"
     echo ""
 }
@@ -89,6 +89,11 @@ if ! command -v merlint &>/dev/null; then
 fi
 
 ok "merlint installed: ${D}$(which merlint)${N}"
+
+# ── Auto-configure shell hook ──
+info "Configuring shell hook for auto-proxy..."
+merlint setup-shell 2>/dev/null && ok "Shell hook installed (auto-proxy on new terminals)" \
+    || warn "Could not install shell hook. Run ${C}merlint setup-shell${N} manually."
 
 # ── Done ──
 echo ""
