@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="merlint" width="80" height="80">
+  <img src="assets/logo.png" alt="merlint" width="180" height="180">
 </p>
 
 <h1 align="center">merlint</h1>
