@@ -225,7 +225,10 @@ merlint auto-detects file format — `--format` is usually not needed.
 
 | Command | Description |
 |---------|-------------|
-| `merlint proxy` | Start transparent optimization proxy |
+| `merlint up` | Quick start: launch proxy with defaults (port 8019, Anthropic, optimize) |
+| `merlint down` | Stop the proxy started by `merlint up` |
+| `merlint proxy` | Start transparent optimization proxy (advanced options) |
+| `merlint dashboard` | Live terminal dashboard showing proxy status and session stats |
 | `merlint scan` | Scan local agent session files |
 | `merlint latest` | Analyze most recent session |
 | `merlint analyze` | Analyze a specific session file |
@@ -233,6 +236,10 @@ merlint auto-detects file format — `--format` is usually not needed.
 | `merlint monitor` | Continuous monitoring + auto-optimize |
 | `merlint query` | Query specific metrics |
 | `merlint spend` | View spend reports and insights |
+| `merlint report` | Show usage report with trends over time |
+| `merlint profile` | Show your agent usage profile and habits |
+| `merlint daemon` | Run as background daemon: periodic scan + summarize |
+| `merlint setup-shell` | Install shell hook for auto ANTHROPIC_BASE_URL config |
 | `merlint-status` | Check proxy status |
 | `merlint-start` | Start proxy |
 | `merlint-stop` | Stop proxy |
